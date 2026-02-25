@@ -30,17 +30,19 @@ services:
   orchestrator:
     build: ../services/orchestrator
     environment:
+      # Bedrock auth via env (from .env)
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+
       MCP_GITHUB_URL: http://mcp_github:7001
       MCP_CI_URL: http://mcp_ci:7002
       MCP_SECURITY_URL: http://mcp_security:7003
 
       # LLMs
-      AWS_REGION: ${AWS_REGION}
       BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID}   # e.g. "anthropic.claude-3-5-sonnet-20240620-v1:0"
       DATABASE_URL: postgresql://devops:devops@postgres:5432/devops_ai
       LOG_LEVEL: INFO
-    volumes:
-    - ~/.aws:/root/.aws:ro
     ports:
       - "8000:8000"
     depends_on:
