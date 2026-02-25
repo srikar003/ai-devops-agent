@@ -63,12 +63,12 @@ async def complete_check_run(state: ReviewState) -> ReviewState:
     return state
 
 
-async def run_ci_tools(state: ReviewState) -> ReviewState:
+async def run_ci_tools(state: ReviewState) -> dict:
     repo_url = f"https://github.com/{state.owner}/{state.repo}.git"
     ref = f"refs/pull/{state.pr_number}/head"
+
     tr = await ci.run_ci(repo_url=repo_url, ref=ref)
 
-    # Build the payload expected by build_ci_findings()
     payload = {
         "ok": tr.ok,
         "summary": tr.meta.get("summary", {}),
@@ -77,17 +77,31 @@ async def run_ci_tools(state: ReviewState) -> ReviewState:
     }
 
     ci_findings = build_ci_findings(payload)
-    state.findings.extend(ci_findings)
-    state.tool_runs.append(tr)
-    return state
+
+    # Return ONLY what changed (patch update)
+    return {
+        "tool_runs": [tr],
+        "findings": ci_findings,
+        "ci_ok": bool(tr.ok),
+        "ci_summary": payload.get("summary", {}),
+    }
 
 
-async def run_security_tools(state: ReviewState) -> ReviewState:
+async def run_security_tools(state: ReviewState) -> dict:
     repo_url = f"https://github.com/{state.owner}/{state.repo}.git"
     ref = f"refs/pull/{state.pr_number}/head"
+
     tr = await sec.run_scans(repo_url=repo_url, ref=ref)
-    state.tool_runs.append(tr)
-    return state
+
+    # If you later build security findings, add them here too.
+    # security_findings = build_security_findings(...)
+    # return {"tool_runs": [tr], "findings": security_findings, "security_ok": bool(tr.ok)}
+
+    return {
+        "tool_runs": [tr],
+        "security_ok": bool(tr.ok),
+        "security_meta": tr.meta or {},
+    }
 
 
 async def rank_findings(state: ReviewState) -> ReviewState:
@@ -105,6 +119,20 @@ def conclude(state: ReviewState) -> str:
     return "success"
 
 
+async def converge_scans(state: ReviewState) -> ReviewState:
+    """Convergence point for parallel scan execution."""
+    return {
+        "check_run_id": state.check_run_id
+    }
+
+
+async def converge_agents(state: ReviewState) -> ReviewState:
+    """Convergence point for parallel agent execution."""
+    return {
+        "check_run_id": state.check_run_id
+    }
+
+
 async def post_comment(state: ReviewState) -> ReviewState:
     if state.final_comment:
         tr = await gh.post_comment(
@@ -112,6 +140,7 @@ async def post_comment(state: ReviewState) -> ReviewState:
         )
         state.tool_runs.append(tr)
     return state
+
 
 def build_graph():
     g = StateGraph(ReviewState)
@@ -122,9 +151,11 @@ def build_graph():
     g.add_node("fetch_pr", fetch_pr)
     g.add_node("run_ci", run_ci_tools)
     g.add_node("run_security", run_security_tools)
+    g.add_node("converge_scans", converge_scans)
     g.add_node("triage", triage_agent)
     g.add_node("code_review", code_review_agent)
     g.add_node("security_review", security_agent)
+    g.add_node("converge_agents", converge_agents)
     g.add_node("rank_findings", rank_findings)
     g.add_node("compose_comment", compose_comment)
     g.add_node("post_comment", post_comment)
@@ -132,15 +163,33 @@ def build_graph():
     # Entry
     g.set_entry_point("fetch_pr")
 
+    # Sequential: fetch and create check
     g.add_edge("fetch_pr", "create_check_run")
+
+    # Parallel: run CI and security scans concurrently
     g.add_edge("create_check_run", "run_ci")
-    g.add_edge("run_ci", "run_security")
-    g.add_edge("run_security", "triage")
-    g.add_edge("triage", "code_review")
-    g.add_edge("code_review", "security_review")
-    g.add_edge("security_review", "rank_findings")
+    g.add_edge("create_check_run", "run_security")
+    g.add_edge("run_ci", "converge_scans")
+    g.add_edge("run_security", "converge_scans")
+
+    # Parallel: run all three agents concurrently
+    g.add_edge("converge_scans", "triage")
+    g.add_edge("converge_scans", "code_review")
+    g.add_edge("converge_scans", "security_review")
+    g.add_edge("triage", "converge_agents")
+    g.add_edge("code_review", "converge_agents")
+    g.add_edge("security_review", "converge_agents")
+
+    # Sequential: process and post results
+    g.add_edge("converge_agents", "rank_findings")
     g.add_edge("rank_findings", "compose_comment")
-    g.add_edge("compose_comment", "post_comment")
+
+    # Conditional: post comment only if findings exist
+    g.add_conditional_edges(
+        "compose_comment",
+        lambda state: "post_comment" if state.findings else "complete_check_run",
+    )
+
     g.add_edge("post_comment", "complete_check_run")
     g.add_edge("complete_check_run", END)
 

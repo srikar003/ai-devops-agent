@@ -27,15 +27,15 @@ Keep it concise.
 """.strip()
 
 
-async def triage_agent(state: ReviewState) -> ReviewState:
+async def triage_agent(state: ReviewState) -> dict:
     txt = bedrock.invoke_text(triage_prompt(state))
     # optional: store triage as a LOW finding for transparency
-    state.findings.append(
+    new_findings = [
         {
             "type": "CODE_QUALITY",
             "severity": "LOW",
             "title": "PR summary (triage)",
             "details": txt[:2000],
         }
-    )
-    return state
+    ]
+    return {"findings": new_findings}

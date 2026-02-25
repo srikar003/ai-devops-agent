@@ -34,6 +34,6 @@ Be concise and actionable.
 """.strip()
 
 
-async def compose_comment(state: ReviewState) -> ReviewState:
-    state.final_comment = bedrock.invoke_text(compose_comment_prompt(state))
-    return state
+async def compose_comment(state: ReviewState) -> dict:
+    final_comment = bedrock.invoke_text(compose_comment_prompt(state))
+    return {"final_comment": final_comment}

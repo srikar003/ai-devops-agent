@@ -45,7 +45,7 @@ def parse_findings(text: str) -> list[Finding]:
         return []
 
 
-async def code_review_agent(state: ReviewState) -> ReviewState:
+async def code_review_agent(state: ReviewState) -> dict:
     txt = bedrock.invoke_text(code_review_prompt(state))
-    state.findings.extend(parse_findings(txt))
-    return state
+    new_findings = parse_findings(txt)
+    return {"findings": new_findings}

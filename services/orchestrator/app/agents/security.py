@@ -56,12 +56,12 @@ def parse_security_findings(text: str) -> list[Finding]:
     ]
 
 
-async def security_agent(state: ReviewState) -> ReviewState:
+async def security_agent(state: ReviewState) -> dict:
     sec_stdout = None
     for tr in reversed(state.tool_runs):
         if tr.tool == "security" and tr.action == "scan":
             sec_stdout = tr.stdout
             break
     txt = bedrock.invoke_text(security_prompt(state, sec_stdout))
-    state.findings.extend(parse_security_findings(txt))
-    return state
+    new_findings = parse_security_findings(txt)
+    return {"findings": new_findings}

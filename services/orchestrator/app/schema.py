@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, List, Dict, Any
-
+from typing import Literal, Optional, List, Dict, Any, Annotated
+import operator
 
 Severity = Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 FindingType = Literal[
@@ -46,9 +46,11 @@ class ReviewState(BaseModel):
     diff: Optional[str] = None
     files_changed: List[str] = Field(default_factory=list)
 
-    tool_runs: List[ToolRun] = Field(default_factory=list)
-    findings: List[Finding] = Field(default_factory=list)
-    patches: List[PatchSuggestion] = Field(default_factory=list)
+    # ✅ reducers: multiple parallel updates are merged by concatenation
+    tool_runs: Annotated[List[ToolRun], operator.add] = Field(default_factory=list)
+    findings: Annotated[List[Finding], operator.add] = Field(default_factory=list)
+    patches: Annotated[List[PatchSuggestion], operator.add] = Field(default_factory=list)
+
 
     final_comment: Optional[str] = None
     head_sha: Optional[str] = None
