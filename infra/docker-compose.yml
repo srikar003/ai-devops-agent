@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: devops
+      POSTGRES_PASSWORD: devops
+      POSTGRES_DB: devops_ai
+    ports:
+      - "5432:5432"
+
+  mcp_github:
+    build: ../mcp/github
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+    ports:
+      - "7001:7001"
+
+  mcp_ci:
+    build: ../mcp/ci
+    ports:
+      - "7002:7002"
+
+  mcp_security:
+    build: ../mcp/security
+    ports:
+      - "7003:7003"
+
+  orchestrator:
+    build: ../services/orchestrator
+    environment:
+      MCP_GITHUB_URL: http://mcp_github:7001
+      MCP_CI_URL: http://mcp_ci:7002
+      MCP_SECURITY_URL: http://mcp_security:7003
+
+      # LLMs
+      AWS_REGION: ${AWS_REGION}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID}   # e.g. "anthropic.claude-3-5-sonnet-20240620-v1:0"
+      DATABASE_URL: postgresql://devops:devops@postgres:5432/devops_ai
+      LOG_LEVEL: INFO
+    volumes:
+    - ~/.aws:/root/.aws:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - mcp_github
+      - mcp_ci
+      - mcp_security
