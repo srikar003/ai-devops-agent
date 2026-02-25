@@ -9,15 +9,26 @@ class CIMCP:
         self.base = settings.mcp_ci_url
 
     async def run_ci(self, repo_url: str, ref: str) -> ToolRun:
-        async with httpx.AsyncClient(timeout=300) as client:
-            r = await client.post(f"{self.base}/run", json={"repo_url": repo_url, "ref": ref})
-            ok = r.status_code // 100 == 2
-            data = r.json() if ok else {}
-            return ToolRun(
-                tool="ci",
-                action="run",
-                ok=ok and data.get("ok", False),
-                meta={"status": r.status_code, "ref": ref},
-                stdout=data.get("stdout"),
-                stderr=data.get("stderr"),
+        tr = ToolRun(tool="ci", action="run", ok=False)
+
+        async with httpx.AsyncClient(timeout=3000) as client:
+            r = await client.post(
+                f"{self.base}/run", json={"repo_url": repo_url, "ref": ref}
             )
+            tr.meta["status"] = r.status_code
+            tr.meta["ref"] = ref
+
+            data = (
+                r.json()
+                if r.headers.get("content-type", "").startswith("application/json")
+                else {}
+            )
+
+            tr.ok = bool(data.get("ok", False)) and (200 <= r.status_code < 300)
+            tr.stdout = data.get("stdout")
+            tr.stderr = data.get("stderr")
+
+            # ✅ this is the key for build_ci_findings
+            tr.meta["summary"] = data.get("summary", {})
+
+        return tr

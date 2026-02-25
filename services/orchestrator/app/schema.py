@@ -4,7 +4,9 @@ from typing import Literal, Optional, List, Dict, Any
 
 
 Severity = Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-FindingType = Literal["CODE_QUALITY", "BUG_RISK", "SECURITY", "PERFORMANCE", "TESTING", "DOCKER", "CI"]
+FindingType = Literal[
+    "CODE_QUALITY", "BUG_RISK", "SECURITY", "PERFORMANCE", "TESTING", "DOCKER", "CI"
+]
 
 
 class Finding(BaseModel):
@@ -49,3 +51,5 @@ class ReviewState(BaseModel):
     patches: List[PatchSuggestion] = Field(default_factory=list)
 
     final_comment: Optional[str] = None
+    head_sha: Optional[str] = None
+    check_run_id: Optional[int] = None
