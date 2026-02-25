@@ -1,5 +1,8 @@
 from __future__ import annotations
 from ..schema import ReviewState
+from ..llm.bedrock import BedrockLLM
+
+bedrock = BedrockLLM()
 
 
 def triage_prompt(state: ReviewState) -> str:
@@ -22,3 +25,17 @@ Return:
 - what checks are most important (tests/security/docker)
 Keep it concise.
 """.strip()
+
+
+async def triage_agent(state: ReviewState) -> ReviewState:
+    txt = bedrock.invoke_text(triage_prompt(state))
+    # optional: store triage as a LOW finding for transparency
+    state.findings.append(
+        {
+            "type": "CODE_QUALITY",
+            "severity": "LOW",
+            "title": "PR summary (triage)",
+            "details": txt[:2000],
+        }
+    )
+    return state

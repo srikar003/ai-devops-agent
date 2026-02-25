@@ -58,7 +58,6 @@ def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
     steps = summary.get("steps") or []
     audit = summary.get("audit") or None
     pm = summary.get("package_manager")
-    logs = (ci_payload.get("stdout") or "") + "\n" + (ci_payload.get("stderr") or "")
 
     # 1) npm audit finding
     if isinstance(audit, dict):
@@ -96,15 +95,6 @@ def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
                     evidence=(ci_payload.get("stdout") or "")[-1500:] or None,
                 )
             )
-    # 1b) Lint parsing from logs (ESLint / Nx)
-    # Only add if we see lint activity or eslint markers; prevents noise on non-node repos.
-    if (
-        "eslint" in logs.lower()
-        or "nx run" in logs.lower()
-        or "@angular-eslint" in logs.lower()
-        or "@nx/dependency-checks" in logs.lower()
-    ):
-        findings.extend(_parse_eslint_issues(logs, limit=30))
 
     # 2) Any failed CI steps
     for s in steps:
@@ -143,105 +133,4 @@ def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
             f.severity.value if hasattr(f.severity, "value") else str(f.severity), 99
         )
     )
-    return findings
-
-
-def _parse_eslint_issues(logs: str, limit: int = 30) -> List[Finding]:
-    """
-    Parses ESLint 'stylish' output and Nx dependency-checks errors into structured findings.
-
-    Supports patterns like:
-      /tmp/.../file.ts
-        11:59  warning  message...  rule/name
-    """
-    findings: List[Finding] = []
-    text = _strip_ansi(logs)
-    lines = text.splitlines()
-
-    current_file: Optional[str] = None
-
-    issue_re = re.compile(
-        r"^\s*(\d+):(\d+)\s+(error|warning)\s+(.*?)\s+([@/\w\-\.:]+)\s*$"
-    )
-
-    def is_file_header(line: str) -> bool:
-        if not line.startswith("/tmp/"):
-            return False
-        return any(
-            line.endswith(ext)
-            for ext in (
-                ".ts",
-                ".js",
-                ".mjs",
-                ".cjs",
-                ".cts",
-                ".mts",
-                ".json",
-                ".html",
-                ".css",
-                "package.json",
-            )
-        )
-
-    i = 0
-    while i < len(lines) and len(findings) < limit:
-        line = lines[i].rstrip()
-
-        # Detect file header
-        if is_file_header(line):
-            current_file = _normalize_ci_path(line)
-            i += 1
-            continue
-
-        m = issue_re.match(line)
-        if m and current_file:
-            ln, col, lvl, msg, rule = (
-                m.group(1),
-                m.group(2),
-                m.group(3),
-                m.group(4),
-                m.group(5),
-            )
-
-            sev = _sev("HIGH") if lvl == "error" else _sev("LOW")
-
-            details = msg.strip()
-
-            # Special-case Nx dependency-checks: capture the missing deps list following this line
-            if rule == "@nx/dependency-checks":
-                deps: List[str] = []
-                j = i + 1
-                while j < len(lines):
-                    nxt = lines[j].rstrip()
-                    # lines like: "    - @nestjs/common"
-                    if re.match(r"^\s*-\s+[@/\w\-\.:]+", nxt) or re.match(
-                        r"^\s{4}-\s+[@/\w\-\.:]+", nxt
-                    ):
-                        deps.append(nxt.strip())
-                        j += 1
-                        continue
-                    break
-                if deps:
-                    details += "\nMissing deps:\n" + "\n".join(deps)
-
-            findings.append(
-                Finding(
-                    type=_ft("CODE_QUALITY"),
-                    severity=sev,
-                    title=f"Lint {lvl}: {rule}",
-                    file=current_file,
-                    line=int(ln),
-                    details=details,
-                    recommendation=(
-                        "Fix the lint issue(s) and re-run `nx lint <project>` or "
-                        "`npx nx run-many -t lint --all`."
-                    ),
-                    evidence=f"{current_file}:{ln}:{col} {lvl} {rule} {msg}"[:800],
-                )
-            )
-            i += 1
-            continue
-
-        i += 1
-
     return findings

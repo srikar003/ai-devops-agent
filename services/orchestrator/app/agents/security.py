@@ -1,5 +1,8 @@
 from __future__ import annotations
 from ..schema import ReviewState, Finding
+from ..llm.bedrock import BedrockLLM
+
+bedrock = BedrockLLM()
 
 
 def security_prompt(state: ReviewState, security_tool_stdout: str | None) -> str:
@@ -51,3 +54,14 @@ def parse_security_findings(text: str) -> list[Finding]:
             ),
         )
     ]
+
+
+async def security_agent(state: ReviewState) -> ReviewState:
+    sec_stdout = None
+    for tr in reversed(state.tool_runs):
+        if tr.tool == "security" and tr.action == "scan":
+            sec_stdout = tr.stdout
+            break
+    txt = bedrock.invoke_text(security_prompt(state, sec_stdout))
+    state.findings.extend(parse_security_findings(txt))
+    return state

@@ -23,5 +23,6 @@ async def run_review(req: RunRequest):
         "ok": True,
         "final_comment": final_state.final_comment,
         "findings_count": len(final_state.findings),
+        "findings": [f.model_dump() for f in final_state.findings],
         "tool_runs": [tr.model_dump() for tr in final_state.tool_runs],
     }

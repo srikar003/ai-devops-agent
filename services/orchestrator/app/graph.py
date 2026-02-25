@@ -1,19 +1,22 @@
 from __future__ import annotations
 from langgraph.graph import StateGraph, END
 from .schema import ReviewState
-from .llm.bedrock import BedrockLLM
 from .tools.github_mcp import GitHubMCP
 from .tools.ci_mcp import CIMCP
 from .tools.security_mcp import SecurityMCP
-from .agents.triage import triage_prompt
-from .agents.code_review import code_review_prompt, parse_findings
-from .agents.security import security_prompt, parse_security_findings
+from .agents.triage import triage_prompt, triage_agent
+from .agents.code_review import code_review_agent
+from .agents.security import security_agent
+from .agents.compose_comment import compose_comment
 from .ci_findings import build_ci_findings
 import os
 
+# assumes these node funcs already exist in the same module:
+# fetch_pr, run_ci_tools, run_security_tools, triage_agent,
+# code_review_agent, security_agent, compose_comment, post_comment
+
 GITHUB_MCP_URL = os.getenv("MCP_GITHUB_URL", "http://mcp_github:7001")
 
-bedrock = BedrockLLM()
 gh = GitHubMCP(GITHUB_MCP_URL)
 ci = CIMCP()
 sec = SecurityMCP()
@@ -87,74 +90,9 @@ async def run_security_tools(state: ReviewState) -> ReviewState:
     return state
 
 
-async def triage_agent(state: ReviewState) -> ReviewState:
-    txt = bedrock.invoke_text(triage_prompt(state))
-    # optional: store triage as a LOW finding for transparency
-    state.findings.append(
-        {
-            "type": "CODE_QUALITY",
-            "severity": "LOW",
-            "title": "PR summary (triage)",
-            "details": txt[:2000],
-        }
-    )
-    return state
-
-
-async def code_review_agent(state: ReviewState) -> ReviewState:
-    txt = bedrock.invoke_text(code_review_prompt(state))
-    state.findings.extend(parse_findings(txt))
-    return state
-
-
-async def security_agent(state: ReviewState) -> ReviewState:
-    sec_stdout = None
-    for tr in reversed(state.tool_runs):
-        if tr.tool == "security" and tr.action == "scan":
-            sec_stdout = tr.stdout
-            break
-    txt = bedrock.invoke_text(security_prompt(state, sec_stdout))
-    state.findings.extend(parse_security_findings(txt))
-    return state
-
-
-def compose_comment_prompt(state: ReviewState) -> str:
-    tool_summary = "\n".join(
-        f"- {tr.tool}/{tr.action}: {'✅' if tr.ok else '❌'}" for tr in state.tool_runs
-    )
-    findings = [
-        f.model_dump() if hasattr(f, "model_dump") else f for f in state.findings[:20]
-    ]
-
-    return f"""
-Write a GitHub PR review comment in Markdown.
-
-Include:
-1) PR summary (2-4 bullets)
-2) Checks run:
-{tool_summary if tool_summary else "- (none)"}
-
-3) Findings grouped by severity (CRITICAL->LOW). Each item:
-- Type, Severity
-- File/line if available
-- What is wrong
-- Concrete recommendation
-
-Use ONLY these findings as ground truth (do not invent):
-{findings}
-
-Be concise and actionable.
-""".strip()
-
-
 async def rank_findings(state: ReviewState) -> ReviewState:
     order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     state.findings.sort(key=lambda f: order.get(f.severity, 99))
-    return state
-
-
-async def compose_comment(state: ReviewState) -> ReviewState:
-    state.final_comment = bedrock.invoke_text(compose_comment_prompt(state))
     return state
 
 
@@ -174,15 +112,6 @@ async def post_comment(state: ReviewState) -> ReviewState:
         )
         state.tool_runs.append(tr)
     return state
-
-
-from langgraph.graph import StateGraph, END
-from .schema import ReviewState
-
-# assumes these node funcs already exist in the same module:
-# fetch_pr, run_ci_tools, run_security_tools, triage_agent,
-# code_review_agent, security_agent, compose_comment, post_comment
-
 
 def build_graph():
     g = StateGraph(ReviewState)

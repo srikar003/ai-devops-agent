@@ -1,6 +1,9 @@
 from __future__ import annotations
 from ..schema import ReviewState, Finding
+from ..llm.bedrock import BedrockLLM
 import json
+
+bedrock = BedrockLLM()
 
 
 def code_review_prompt(state: ReviewState) -> str:
@@ -40,3 +43,9 @@ def parse_findings(text: str) -> list[Finding]:
         return findings
     except Exception:
         return []
+
+
+async def code_review_agent(state: ReviewState) -> ReviewState:
+    txt = bedrock.invoke_text(code_review_prompt(state))
+    state.findings.extend(parse_findings(txt))
+    return state
