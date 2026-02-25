@@ -9,6 +9,7 @@ class BedrockLLM:
     Minimal Bedrock invoke wrapper for text generation.
     You can swap payloads depending on model provider (Anthropic, etc.).
     """
+
     def __init__(self):
         self.client = boto3.client("bedrock-runtime", region_name=settings.aws_region)
         self.model_id = settings.bedrock_model_id

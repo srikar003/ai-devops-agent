@@ -10,7 +10,9 @@ class SecurityMCP:
 
     async def run_scans(self, repo_url: str, ref: str) -> ToolRun:
         async with httpx.AsyncClient(timeout=300) as client:
-            r = await client.post(f"{self.base}/scan", json={"repo_url": repo_url, "ref": ref})
+            r = await client.post(
+                f"{self.base}/scan", json={"repo_url": repo_url, "ref": ref}
+            )
             ok = r.status_code // 100 == 2
             data = r.json() if ok else {}
             return ToolRun(

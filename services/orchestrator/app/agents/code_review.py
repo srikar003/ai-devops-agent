@@ -2,6 +2,7 @@ from __future__ import annotations
 from ..schema import ReviewState, Finding
 import json
 
+
 def code_review_prompt(state: ReviewState) -> str:
     return f"""
 You are a senior software engineer reviewing a PR.
