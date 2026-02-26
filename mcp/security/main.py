@@ -1,11 +1,14 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+import shutil
 import subprocess
 import tempfile
-import os
-import shutil
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel
 
 app = FastAPI(title="MCP Security")
+mcp = FastMCP(name="security-mcp", stateless_http=True)
 
 
 class ScanReq(BaseModel):
@@ -13,71 +16,67 @@ class ScanReq(BaseModel):
     ref: str
 
 
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
 def run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     return p.returncode, p.stdout, p.stderr
 
 
-@app.post("/scan")
-def scan(req: ScanReq):
+def scan_impl(repo_url: str, ref: str) -> dict:
     tmpdir = tempfile.mkdtemp(prefix="repo_")
-    stdout_all = []
-    stderr_all = []
+    stdout_all: list[str] = []
+    stderr_all: list[str] = []
     ok = True
 
     try:
-        # Clone
-        code, out, err = run(["git", "clone", "--depth", "1", req.repo_url, tmpdir])
+        code, out, err = run(["git", "clone", "--depth", "1", repo_url, tmpdir])
         stdout_all.append(out)
         stderr_all.append(err)
         if code != 0:
-            return {
-                "ok": False,
-                "stdout": "\n".join(stdout_all),
-                "stderr": "\n".join(stderr_all),
-            }
+            return {"ok": False, "stdout": "\n".join(stdout_all), "stderr": "\n".join(stderr_all)}
 
-        # Fetch PR ref (works for GitHub refs/pull/<n>/head)
-        code, out, err = run(["git", "fetch", "origin", req.ref], cwd=tmpdir)
+        code, out, err = run(["git", "fetch", "origin", ref], cwd=tmpdir)
         stdout_all.append(out)
         stderr_all.append(err)
         if code != 0:
-            return {
-                "ok": False,
-                "stdout": "\n".join(stdout_all),
-                "stderr": "\n".join(stderr_all),
-            }
+            return {"ok": False, "stdout": "\n".join(stdout_all), "stderr": "\n".join(stderr_all)}
 
         code, out, err = run(["git", "checkout", "FETCH_HEAD"], cwd=tmpdir)
         stdout_all.append(out)
         stderr_all.append(err)
         if code != 0:
-            return {
-                "ok": False,
-                "stdout": "\n".join(stdout_all),
-                "stderr": "\n".join(stderr_all),
-            }
+            return {"ok": False, "stdout": "\n".join(stdout_all), "stderr": "\n".join(stderr_all)}
 
-        # Semgrep scan
-        # --config auto uses semgrep registry rules; requires outbound internet
         code, out, err = run(["semgrep", "--config", "auto", "--json"], cwd=tmpdir)
         stdout_all.append(out)
         stderr_all.append(err)
-
-        # semgrep returns non-zero when findings exist; treat as ok=True but report output
         if code not in (0, 1):
             ok = False
 
-        return {
-            "ok": ok,
-            "stdout": "\n".join(stdout_all),
-            "stderr": "\n".join(stderr_all),
-        }
-
+        return {"ok": ok, "stdout": "\n".join(stdout_all), "stderr": "\n".join(stderr_all)}
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@mcp.tool(name="security_scan")
+def security_scan(repo_url: str, ref: str) -> dict:
+    return scan_impl(repo_url, ref)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"ok": True}
+
+
+@app.post("/scan")
+def scan(req: ScanReq):
+    return scan_impl(req.repo_url, req.ref)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    async with mcp.session_manager.run():
+        yield
+
+
+app.router.lifespan_context = lifespan
+app.mount("/mcp/", mcp.streamable_http_app())

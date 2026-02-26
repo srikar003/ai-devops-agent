@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+
 import httpx
 
+from ..config import settings
 from ..schema import ToolRun
 
 
 class GitHubMCP:
-    def __init__(self, base_url: str = "http://mcp_github:7001"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self):
+        self.base_url = settings.mcp_github_url.rstrip("/")
 
     async def get_pr_context(
         self, owner: str, repo: str, pr_number: int
@@ -49,19 +51,16 @@ class GitHubMCP:
         description: Optional[str] = None,
         target_url: Optional[str] = None,
     ) -> ToolRun:
-        """
-        Uses the GitHub Statuses API via MCP endpoint /status (PAT-friendly).
-        """
+        payload: Dict[str, Any] = {
+            "owner": owner,
+            "repo": repo,
+            "sha": sha,
+            "state": state,
+            "context": context,
+            "description": description,
+            "target_url": target_url,
+        }
         async with httpx.AsyncClient(timeout=60) as client:
-            payload: Dict[str, Any] = {
-                "owner": owner,
-                "repo": repo,
-                "sha": sha,
-                "state": state,
-                "context": context,
-                "description": description,
-                "target_url": target_url,
-            }
             r = await client.post(f"{self.base_url}/status", json=payload)
             ok = 200 <= r.status_code < 300
             return ToolRun(

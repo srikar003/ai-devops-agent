@@ -1,20 +1,28 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import os
+from contextlib import asynccontextmanager
+
 import httpx
+from fastapi import FastAPI, HTTPException
+from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel
 
 app = FastAPI(title="MCP GitHub")
+mcp = FastMCP(name="github-mcp", stateless_http=True)
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-if not GITHUB_TOKEN:
-    # You can still start the server, but calls will fail with clear error.
-    pass
 
-HEADERS = lambda: {
-    "Authorization": f"Bearer {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
+
+def headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def ensure_token() -> None:
+    if not GITHUB_TOKEN:
+        raise HTTPException(status_code=500, detail="GITHUB_TOKEN not set for mcp/github")
 
 
 class CommentReq(BaseModel):
@@ -28,18 +36,12 @@ class CheckRunReq(BaseModel):
     owner: str
     repo: str
     head_sha: str
-
     name: str = "ai-devops-agent"
-    status: str = "in_progress"  # in_progress | completed
-    conclusion: str | None = (
-        None  # success | failure | neutral | cancelled | skipped | timed_out | action_required
-    )
-
+    status: str = "in_progress"
+    conclusion: str | None = None
     title: str | None = None
     summary: str | None = None
     text: str | None = None
-
-    # optional: update existing check run
     check_run_id: int | None = None
 
 
@@ -47,74 +49,56 @@ class CommitStatusReq(BaseModel):
     owner: str
     repo: str
     sha: str
-    state: str  # error | failure | pending | success
+    state: str
     context: str = "ai-devops-agent"
     description: str | None = None
     target_url: str | None = None
 
 
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
-@app.post("/status")
-async def set_commit_status(req: CommitStatusReq):
-    if not GITHUB_TOKEN:
-        raise HTTPException(
-            status_code=500, detail="GITHUB_TOKEN not set for mcp/github"
-        )
-
-    url = f"https://api.github.com/repos/{req.owner}/{req.repo}/statuses/{req.sha}"
-    payload = {
-        "state": req.state,
-        "context": req.context,
-        "description": req.description or "",
-    }
-    if req.target_url:
-        payload["target_url"] = req.target_url
+async def do_set_commit_status(
+    owner: str,
+    repo: str,
+    sha: str,
+    state: str,
+    context: str = "ai-devops-agent",
+    description: str | None = None,
+    target_url: str | None = None,
+) -> dict:
+    ensure_token()
+    url = f"https://api.github.com/repos/{owner}/{repo}/statuses/{sha}"
+    payload = {"state": state, "context": context, "description": description or ""}
+    if target_url:
+        payload["target_url"] = target_url
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(url, headers=HEADERS(), json=payload)
+        r = await client.post(url, headers=headers(), json=payload)
         if r.status_code not in (200, 201):
             raise HTTPException(status_code=r.status_code, detail=r.text)
         return {"ok": True}
 
 
-@app.get("/pr")
-async def get_pr(owner: str, repo: str, pr: int):
-    if not GITHUB_TOKEN:
-        raise HTTPException(
-            status_code=500, detail="GITHUB_TOKEN not set for mcp/github"
-        )
-
+async def do_get_pr_context(owner: str, repo: str, pr: int) -> dict:
+    ensure_token()
     async with httpx.AsyncClient(timeout=60) as client:
-        # PR info
         pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr}"
-        pr_resp = await client.get(pr_url, headers=HEADERS())
+        pr_resp = await client.get(pr_url, headers=headers())
         if pr_resp.status_code != 200:
             raise HTTPException(status_code=pr_resp.status_code, detail=pr_resp.text)
         pr_data = pr_resp.json()
         head_sha = (pr_data.get("head") or {}).get("sha")
 
-        # Files changed
         files_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr}/files"
-        files_resp = await client.get(files_url, headers=HEADERS())
+        files_resp = await client.get(files_url, headers=headers())
         if files_resp.status_code != 200:
-            raise HTTPException(
-                status_code=files_resp.status_code, detail=files_resp.text
-            )
+            raise HTTPException(status_code=files_resp.status_code, detail=files_resp.text)
         files_data = files_resp.json()
         files = [f.get("filename") for f in files_data if f.get("filename")]
 
-        # Diff (unified)
-        diff_headers = dict(HEADERS())
+        diff_headers = dict(headers())
         diff_headers["Accept"] = "application/vnd.github.v3.diff"
         diff_resp = await client.get(pr_url, headers=diff_headers)
         if diff_resp.status_code != 200:
-            raise HTTPException(
-                status_code=diff_resp.status_code, detail=diff_resp.text
-            )
+            raise HTTPException(status_code=diff_resp.status_code, detail=diff_resp.text)
 
         return {
             "title": pr_data.get("title"),
@@ -125,34 +109,19 @@ async def get_pr(owner: str, repo: str, pr: int):
         }
 
 
-@app.post("/comment")
-async def post_comment(req: CommentReq):
-    if not GITHUB_TOKEN:
-        raise HTTPException(
-            status_code=500, detail="GITHUB_TOKEN not set for mcp/github"
-        )
-
-    url = (
-        f"https://api.github.com/repos/{req.owner}/{req.repo}/issues/{req.pr}/comments"
-    )
-    payload = {"body": req.body}
-
+async def do_post_comment(owner: str, repo: str, pr: int, body: str) -> dict:
+    ensure_token()
+    url = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr}/comments"
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(url, headers=HEADERS(), json=payload)
+        r = await client.post(url, headers=headers(), json={"body": body})
         if r.status_code not in (200, 201):
             raise HTTPException(status_code=r.status_code, detail=r.text)
         return {"ok": True, "id": r.json().get("id")}
 
 
-@app.post("/check-run")
-async def upsert_check_run(req: CheckRunReq):
-    if not GITHUB_TOKEN:
-        raise HTTPException(
-            status_code=500, detail="GITHUB_TOKEN not set for mcp/github"
-        )
-
+async def do_upsert_check_run(req: CheckRunReq) -> dict:
+    ensure_token()
     base = f"https://api.github.com/repos/{req.owner}/{req.repo}/check-runs"
-
     payload = {
         "name": req.name,
         "head_sha": req.head_sha,
@@ -163,21 +132,89 @@ async def upsert_check_run(req: CheckRunReq):
             "text": req.text or "",
         },
     }
-
-    # Only include conclusion when completed (GitHub requires this)
     if req.status == "completed":
         payload["conclusion"] = req.conclusion or "neutral"
 
     async with httpx.AsyncClient(timeout=60) as client:
         if req.check_run_id:
-            url = f"{base}/{req.check_run_id}"
-            r = await client.patch(url, headers=HEADERS(), json=payload)
+            r = await client.patch(f"{base}/{req.check_run_id}", headers=headers(), json=payload)
         else:
-            url = base
-            r = await client.post(url, headers=HEADERS(), json=payload)
-
+            r = await client.post(base, headers=headers(), json=payload)
         if r.status_code not in (200, 201):
             raise HTTPException(status_code=r.status_code, detail=r.text)
-
         data = r.json()
         return {"ok": True, "check_run_id": data.get("id")}
+
+
+@mcp.tool(name="github_get_pr_context")
+async def github_get_pr_context(owner: str, repo: str, pr: int) -> dict:
+    return await do_get_pr_context(owner, repo, pr)
+
+
+@mcp.tool(name="github_post_comment")
+async def github_post_comment(owner: str, repo: str, pr: int, body: str) -> dict:
+    return await do_post_comment(owner, repo, pr, body)
+
+
+@mcp.tool(name="github_set_commit_status")
+async def github_set_commit_status(
+    owner: str,
+    repo: str,
+    sha: str,
+    state: str,
+    context: str = "ai-devops-agent",
+    description: str | None = None,
+    target_url: str | None = None,
+) -> dict:
+    return await do_set_commit_status(
+        owner=owner,
+        repo=repo,
+        sha=sha,
+        state=state,
+        context=context,
+        description=description,
+        target_url=target_url,
+    )
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"ok": True}
+
+
+@app.post("/status")
+async def set_commit_status(req: CommitStatusReq):
+    return await do_set_commit_status(
+        owner=req.owner,
+        repo=req.repo,
+        sha=req.sha,
+        state=req.state,
+        context=req.context,
+        description=req.description,
+        target_url=req.target_url,
+    )
+
+
+@app.get("/pr")
+async def get_pr(owner: str, repo: str, pr: int):
+    return await do_get_pr_context(owner, repo, pr)
+
+
+@app.post("/comment")
+async def post_comment(req: CommentReq):
+    return await do_post_comment(req.owner, req.repo, req.pr, req.body)
+
+
+@app.post("/check-run")
+async def upsert_check_run(req: CheckRunReq):
+    return await do_upsert_check_run(req)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    async with mcp.session_manager.run():
+        yield
+
+
+app.router.lifespan_context = lifespan
+app.mount("/mcp/", mcp.streamable_http_app())

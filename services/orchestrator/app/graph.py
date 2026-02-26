@@ -9,15 +9,12 @@ from .agents.code_review import code_review_agent
 from .agents.security import security_agent
 from .agents.compose_comment import compose_comment
 from .ci_findings import build_ci_findings
-import os
 
 # assumes these node funcs already exist in the same module:
 # fetch_pr, run_ci_tools, run_security_tools, triage_agent,
 # code_review_agent, security_agent, compose_comment, post_comment
 
-GITHUB_MCP_URL = os.getenv("MCP_GITHUB_URL", "http://mcp_github:7001")
-
-gh = GitHubMCP(GITHUB_MCP_URL)
+gh = GitHubMCP()
 ci = CIMCP()
 sec = SecurityMCP()
 

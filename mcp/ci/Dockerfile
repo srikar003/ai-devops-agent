@@ -13,7 +13,8 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir \
     fastapi==0.115.0 \
     uvicorn==0.30.6 \
-    pydantic==2.8.2
+    pydantic==2.8.2 \
+    "mcp>=1.12,<2"
 
 # Optional: pnpm for repos that use it
 RUN npm i -g pnpm@9

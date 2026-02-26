@@ -21,6 +21,18 @@ An AI-powered DevOps agent that automatically reviews GitHub Pull Requests using
 
 ---
 
+# Integration Mode
+
+The orchestrator currently integrates with service HTTP endpoints (not MCP transport).
+
+- `mcp_github`: `/pr`, `/status`, `/comment`, `/check-run`
+- `mcp_ci`: `/run`
+- `mcp_security`: `/scan`
+
+The `/mcp` endpoints may exist on services for future use, but they are not used by the orchestrator runtime flow.
+
+---
+
 # 🏆 Why This Project Matters
 
 This is not a basic CI bot.
@@ -103,9 +115,9 @@ POST /run
 | Service         | Port | Description                          |
 |----------------|------|--------------------------------------|
 | Orchestrator  | 8000 | LangGraph multi-agent workflow       |
-| MCP GitHub    | 7001 | GitHub API wrapper                   |
-| MCP CI        | 7002 | Deterministic CI runner              |
-| MCP Security  | 7003 | Static security scanning (Semgrep)   |
+| MCP GitHub    | 7001 | GitHub API HTTP wrapper              |
+| MCP CI        | 7002 | Deterministic CI runner (HTTP)       |
+| MCP Security  | 7003 | Static security scanning (HTTP)      |
 
 ---
 

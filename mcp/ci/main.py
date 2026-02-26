@@ -1,32 +1,25 @@
-# mcp/ci/main.py
-from __future__ import annotations
-
-from fastapi import FastAPI
-from pydantic import BaseModel
+import json
+import shutil
 import subprocess
 import tempfile
-import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
-import json
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import FastAPI
+from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel
 
 app = FastAPI(title="MCP CI")
+mcp = FastMCP(name="ci-mcp", stateless_http=True)
 
 
-# -----------------------------
-# API models
-# -----------------------------
 class RunReq(BaseModel):
     repo_url: str
-    ref: str  # e.g. refs/pull/1/head
+    ref: str
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def run(
-    cmd: List[str], cwd: str | None = None, timeout: int = 1800
-) -> tuple[int, str, str]:
+def run(cmd: List[str], cwd: str | None = None, timeout: int = 1800) -> tuple[int, str, str]:
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
     return p.returncode, p.stdout, p.stderr
 
@@ -67,12 +60,10 @@ def is_nx_workspace(repo_dir: str) -> bool:
 
 
 def cmd_install(pm: str) -> List[str]:
-    # Use safe locked installs
     if pm == "pnpm":
         return ["pnpm", "install", "--frozen-lockfile"]
     if pm == "yarn":
         return ["yarn", "install", "--frozen-lockfile"]
-    # npm
     return ["npm", "ci"]
 
 
@@ -84,13 +75,7 @@ def safe_json_load(s: str) -> Optional[dict]:
 
 
 def parse_npm_audit(audit_json: dict) -> dict:
-    """
-    Supports both npm audit JSON shapes (older/newer).
-    Returns counts for low/moderate/high/critical and total.
-    """
     out = {"low": 0, "moderate": 0, "high": 0, "critical": 0, "total": 0}
-
-    # Newer format: {"metadata":{"vulnerabilities":{"info":..,"low":..}}}
     meta = (audit_json.get("metadata") or {}).get("vulnerabilities")
     if isinstance(meta, dict):
         out["low"] = int(meta.get("low", 0) or 0)
@@ -100,7 +85,6 @@ def parse_npm_audit(audit_json: dict) -> dict:
         out["total"] = out["low"] + out["moderate"] + out["high"] + out["critical"]
         return out
 
-    # Older format: "advisories" keyed objects
     advisories = audit_json.get("advisories")
     if isinstance(advisories, dict):
         for _, adv in advisories.items():
@@ -109,7 +93,6 @@ def parse_npm_audit(audit_json: dict) -> dict:
                 out[sev] += 1
         out["total"] = out["low"] + out["moderate"] + out["high"] + out["critical"]
         return out
-
     return out
 
 
@@ -125,8 +108,6 @@ def looks_like_missing_target(err_text: str) -> bool:
 
 
 def nx_commands() -> List[Tuple[str, List[str]]]:
-    # Using npx means we don’t rely on global nx installation.
-    # run-many will try across workspace; some targets may not exist -> we’ll skip those.
     return [
         ("nx-lint", ["npx", "nx", "run-many", "-t", "lint", "--all"]),
         ("nx-test", ["npx", "nx", "run-many", "-t", "test", "--all"]),
@@ -135,22 +116,11 @@ def nx_commands() -> List[Tuple[str, List[str]]]:
     ]
 
 
-# -----------------------------
-# API
-# -----------------------------
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
-@app.post("/run")
-def run_ci(req: RunReq):
+def run_ci_impl(repo_url: str, ref: str) -> dict:
     tmpdir = tempfile.mkdtemp(prefix="ci_")
-
     stdout_all: List[str] = []
     stderr_all: List[str] = []
     steps: List[Dict[str, Any]] = []
-
     ok = True
 
     def record_step(name: str, step_ok: bool, extra: dict | None = None):
@@ -163,12 +133,7 @@ def run_ci(req: RunReq):
         steps.append(entry)
 
     try:
-        # -----------------------------
-        # Git checkout PR ref
-        # -----------------------------
-        code, out, err = run(
-            ["git", "clone", "--depth", "1", req.repo_url, tmpdir], timeout=300
-        )
+        code, out, err = run(["git", "clone", "--depth", "1", repo_url, tmpdir], timeout=300)
         stdout_all.append(out)
         stderr_all.append(err)
         record_step("git-clone", code == 0, {"exit_code": code})
@@ -180,12 +145,10 @@ def run_ci(req: RunReq):
                 "stderr": "\n".join(stderr_all),
             }
 
-        code, out, err = run(
-            ["git", "fetch", "origin", req.ref], cwd=tmpdir, timeout=300
-        )
+        code, out, err = run(["git", "fetch", "origin", ref], cwd=tmpdir, timeout=300)
         stdout_all.append(out)
         stderr_all.append(err)
-        record_step("git-fetch-ref", code == 0, {"exit_code": code, "ref": req.ref})
+        record_step("git-fetch-ref", code == 0, {"exit_code": code, "ref": ref})
         if code != 0:
             return {
                 "ok": False,
@@ -206,9 +169,6 @@ def run_ci(req: RunReq):
                 "stderr": "\n".join(stderr_all),
             }
 
-        # -----------------------------
-        # Node / package manager detection
-        # -----------------------------
         if not (Path(tmpdir) / "package.json").exists():
             stdout_all.append("\n[ci] No package.json detected; skipping node CI.\n")
             record_step("detect-node-project", True, {"node_project": False})
@@ -221,13 +181,8 @@ def run_ci(req: RunReq):
 
         pm = detect_pm(tmpdir)
         stdout_all.append(f"\n[ci] detected package manager: {pm}\n")
-        record_step(
-            "detect-node-project", True, {"node_project": True, "package_manager": pm}
-        )
+        record_step("detect-node-project", True, {"node_project": True, "package_manager": pm})
 
-        # -----------------------------
-        # Install deps
-        # -----------------------------
         install_cmd = cmd_install(pm)
         stdout_all.append(f"\n[ci] install: {' '.join(install_cmd)}\n")
         code, out, err = run(install_cmd, cwd=tmpdir, timeout=1800)
@@ -242,24 +197,15 @@ def run_ci(req: RunReq):
                 "stderr": "\n".join(stderr_all),
             }
 
-        # -----------------------------
-        # npm audit (only for npm; pnpm/yarn have different audit behavior)
-        # -----------------------------
         audit_summary = None
         if pm == "npm":
             stdout_all.append("\n[ci] npm audit (json)\n")
-            # npm audit returns non-zero if vulns exist — that’s not a crash.
             code, out, err = run(["npm", "audit", "--json"], cwd=tmpdir, timeout=600)
             stdout_all.append(out)
             stderr_all.append(err)
             data = safe_json_load(out) or {}
             audit_summary = parse_npm_audit(data)
-
-            # Decide if audit should fail CI:
-            # - fail if critical > 0 (always)
-            # - fail if high > 0 (recommended for prod; change to warning if you prefer)
-            audit_fail = audit_summary["critical"] > 0  # or (audit_summary["high"] > 0)
-
+            audit_fail = audit_summary["critical"] > 0
             record_step(
                 "npm-audit",
                 (not audit_fail),
@@ -270,14 +216,10 @@ def run_ci(req: RunReq):
                 },
             )
             if audit_fail:
-                # keep running other steps? usually yes for visibility.
                 stdout_all.append(
                     f"\n[ci] npm audit policy failed: high={audit_summary['high']} critical={audit_summary['critical']}\n"
                 )
 
-        # -----------------------------
-        # Run scripts if present
-        # -----------------------------
         scr = scripts(tmpdir)
         preferred_scripts = [s for s in ["lint", "test", "typecheck"] if s in scr]
         if not preferred_scripts and "build" in scr:
@@ -295,16 +237,10 @@ def run_ci(req: RunReq):
                 record_step(f"script-{s}", code == 0, {"exit_code": code, "cmd": cmd})
                 ran_any_checks = True
                 if code != 0:
-                    # stop at first failing script to reduce noise; change if you prefer to continue
                     break
 
-        # -----------------------------
-        # Nx fallback if no scripts and Nx workspace detected
-        # -----------------------------
         if not ran_any_checks and is_nx_workspace(tmpdir):
-            stdout_all.append(
-                "\n[ci] Nx workspace detected; running nx run-many fallbacks.\n"
-            )
+            stdout_all.append("\n[ci] Nx workspace detected; running nx run-many fallbacks.\n")
             record_step("nx-detected", True)
 
             for name, cmd in nx_commands():
@@ -314,7 +250,6 @@ def run_ci(req: RunReq):
                 stderr_all.append(err)
 
                 if code != 0 and looks_like_missing_target(out + "\n" + err):
-                    # Missing target across projects — treat as skipped, not failure
                     record_step(
                         name,
                         True,
@@ -329,33 +264,22 @@ def run_ci(req: RunReq):
 
                 record_step(name, code == 0, {"exit_code": code, "cmd": cmd})
                 ran_any_checks = True
-
-                # If a real failure (not missing target), stop to keep logs shorter
                 if code != 0:
                     break
 
-        # -----------------------------
-        # If still no checks ran, declare install-only
-        # -----------------------------
         if not ran_any_checks:
             stdout_all.append(
                 "\n[ci] No lint/test/typecheck/build scripts found and no Nx checks ran. Install-only.\n"
             )
             record_step("checks-none", True, {"note": "install_only"})
 
-        # Overall ok already tracked by record_step()
-        summary = {
-            "package_manager": pm,
-            "audit": audit_summary,
-            "steps": steps,
-        }
+        summary = {"package_manager": pm, "audit": audit_summary, "steps": steps}
         return {
             "ok": ok,
             "summary": summary,
             "stdout": "\n".join(stdout_all),
             "stderr": "\n".join(stderr_all),
         }
-
     except subprocess.TimeoutExpired as e:
         stderr_all.append(f"\nTIMEOUT: {e}\n")
         record_step("timeout", False, {"error": str(e)})
@@ -367,3 +291,28 @@ def run_ci(req: RunReq):
         }
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@mcp.tool(name="ci_run")
+def ci_run(repo_url: str, ref: str) -> dict:
+    return run_ci_impl(repo_url, ref)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"ok": True}
+
+
+@app.post("/run")
+def run_ci(req: RunReq):
+    return run_ci_impl(req.repo_url, req.ref)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    async with mcp.session_manager.run():
+        yield
+
+
+app.router.lifespan_context = lifespan
+app.mount("/mcp/", mcp.streamable_http_app())
