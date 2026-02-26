@@ -217,4 +217,4 @@ async def lifespan(_app: FastAPI):
 
 
 app.router.lifespan_context = lifespan
-app.mount("/mcp/", mcp.streamable_http_app())
+app.mount("/", mcp.streamable_http_app())

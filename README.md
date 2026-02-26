@@ -32,9 +32,9 @@ The orchestrator currently integrates with services through MCP tools (`@mcp.too
 REST endpoints may still exist for compatibility, but orchestrator runtime uses MCP tool calls.
 
 Configured MCP roots:
-- `MCP_GITHUB_URL=http://mcp_github:7001/mcp/mcp`
-- `MCP_CI_URL=http://mcp_ci:7002/mcp/mcp`
-- `MCP_SECURITY_URL=http://mcp_security:7003/mcp/mcp`
+- `MCP_GITHUB_URL=http://mcp_github:7001/mcp`
+- `MCP_CI_URL=http://mcp_ci:7002/mcp`
+- `MCP_SECURITY_URL=http://mcp_security:7003/mcp`
 
 ---
 
@@ -131,9 +131,9 @@ POST /run
 ## Orchestrator
 
 ```
-MCP_GITHUB_URL=http://mcp_github:7001/mcp/mcp
-MCP_CI_URL=http://mcp_ci:7002/mcp/mcp
-MCP_SECURITY_URL=http://mcp_security:7003/mcp/mcp
+MCP_GITHUB_URL=http://mcp_github:7001/mcp
+MCP_CI_URL=http://mcp_ci:7002/mcp
+MCP_SECURITY_URL=http://mcp_security:7003/mcp
 
 AWS_REGION=us-east-1
 BEDROCK_MODEL_ID=anthropic.claude-3-5-haiku-20241022-v1:0
