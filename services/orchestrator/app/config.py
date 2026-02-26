@@ -3,9 +3,9 @@ import os
 
 
 class Settings(BaseModel):
-    mcp_github_url: str = os.getenv("MCP_GITHUB_URL", "http://localhost:7001")
-    mcp_ci_url: str = os.getenv("MCP_CI_URL", "http://localhost:7002")
-    mcp_security_url: str = os.getenv("MCP_SECURITY_URL", "http://localhost:7003")
+    mcp_github_url: str = os.getenv("MCP_GITHUB_URL", "http://localhost:7001/mcp/mcp")
+    mcp_ci_url: str = os.getenv("MCP_CI_URL", "http://localhost:7002/mcp/mcp")
+    mcp_security_url: str = os.getenv("MCP_SECURITY_URL", "http://localhost:7003/mcp/mcp")
 
     aws_region: str = os.getenv("AWS_REGION", "us-east-1")
     bedrock_model_id: str = os.getenv("BEDROCK_MODEL_ID", "")

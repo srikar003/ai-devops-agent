@@ -1,45 +1,50 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
-
-import httpx
 
 from ..config import settings
 from ..schema import ToolRun
+from .mcp_gateway_client import MCPGatewayClient
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubMCP:
     def __init__(self):
-        self.base_url = settings.mcp_github_url.rstrip("/")
+        self.client = MCPGatewayClient({"github": settings.mcp_github_url})
 
     async def get_pr_context(
         self, owner: str, repo: str, pr_number: int
     ) -> Dict[str, Any]:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.get(
-                f"{self.base_url}/pr",
-                params={"owner": owner, "repo": repo, "pr": pr_number},
-            )
-            r.raise_for_status()
-            return r.json()
+        logger.info("GitHubMCP.get_pr_context owner=%s repo=%s pr=%s", owner, repo, pr_number)
+        data = await self.client.invoke(
+            "github",
+            "github_get_pr_context",
+            {"owner": owner, "repo": repo, "pr": pr_number},
+        )
+        logger.info("GitHubMCP.get_pr_context done keys=%s", sorted(data.keys()))
+        return data
 
     async def post_comment(
         self, owner: str, repo: str, pr_number: int, body: str
     ) -> ToolRun:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                f"{self.base_url}/comment",
-                json={"owner": owner, "repo": repo, "pr": pr_number, "body": body},
-            )
-            ok = 200 <= r.status_code < 300
-            return ToolRun(
-                tool="github",
-                action="comment",
-                ok=ok,
-                meta={"status": r.status_code},
-                stdout=r.text if ok else None,
-                stderr=None if ok else r.text,
-            )
+        logger.info("GitHubMCP.post_comment owner=%s repo=%s pr=%s", owner, repo, pr_number)
+        data = await self.client.invoke(
+            "github",
+            "github_post_comment",
+            {"owner": owner, "repo": repo, "pr": pr_number, "body": body},
+        )
+        ok = bool(data.get("ok", False))
+        logger.info("GitHubMCP.post_comment done ok=%s keys=%s", ok, sorted(data.keys()))
+        return ToolRun(
+            tool="github",
+            action="comment",
+            ok=ok,
+            meta={"comment_id": data.get("id")},
+            stdout=str(data) if ok else None,
+            stderr=None if ok else str(data),
+        )
 
     async def set_commit_status(
         self,
@@ -51,6 +56,13 @@ class GitHubMCP:
         description: Optional[str] = None,
         target_url: Optional[str] = None,
     ) -> ToolRun:
+        logger.info(
+            "GitHubMCP.set_commit_status owner=%s repo=%s sha=%s state=%s",
+            owner,
+            repo,
+            sha[:7] if sha else "",
+            state,
+        )
         payload: Dict[str, Any] = {
             "owner": owner,
             "repo": repo,
@@ -60,14 +72,14 @@ class GitHubMCP:
             "description": description,
             "target_url": target_url,
         }
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(f"{self.base_url}/status", json=payload)
-            ok = 200 <= r.status_code < 300
-            return ToolRun(
-                tool="github",
-                action="status",
-                ok=ok,
-                meta={"status": r.status_code, "state": state, "context": context},
-                stdout=r.text if ok else None,
-                stderr=None if ok else r.text,
-            )
+        data = await self.client.invoke("github", "github_set_commit_status", payload)
+        ok = bool(data.get("ok", False))
+        logger.info("GitHubMCP.set_commit_status done ok=%s keys=%s", ok, sorted(data.keys()))
+        return ToolRun(
+            tool="github",
+            action="status",
+            ok=ok,
+            meta={"state": state, "context": context},
+            stdout=str(data) if ok else None,
+            stderr=None if ok else str(data),
+        )

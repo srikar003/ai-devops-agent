@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from langgraph.graph import StateGraph, END
 from .schema import ReviewState
 from .tools.github_mcp import GitHubMCP
@@ -10,6 +11,8 @@ from .agents.security import security_agent
 from .agents.compose_comment import compose_comment
 from .ci_findings import build_ci_findings
 
+logger = logging.getLogger(__name__)
+
 # assumes these node funcs already exist in the same module:
 # fetch_pr, run_ci_tools, run_security_tools, triage_agent,
 # code_review_agent, security_agent, compose_comment, post_comment
@@ -20,16 +23,27 @@ sec = SecurityMCP()
 
 
 async def fetch_pr(state: ReviewState) -> ReviewState:
+    logger.info("graph.fetch_pr start owner=%s repo=%s pr=%s", state.owner, state.repo, state.pr_number)
     ctx = await gh.get_pr_context(state.owner, state.repo, state.pr_number)
+    if "head_sha" not in ctx:
+        logger.error("graph.fetch_pr missing head_sha ctx_keys=%s", sorted(ctx.keys()))
+        raise ValueError(f"Missing 'head_sha' in GitHub MCP response. keys={sorted(ctx.keys())}")
     state.pr_title = ctx.get("title")
     state.pr_body = ctx.get("body")
     state.diff = ctx.get("diff")
     state.files_changed = ctx.get("files", [])
     state.head_sha = ctx["head_sha"]
+    logger.info(
+        "graph.fetch_pr done title=%s files=%s head_sha=%s",
+        (state.pr_title or "")[:80],
+        len(state.files_changed),
+        (state.head_sha or "")[:7],
+    )
     return state
 
 
 async def create_check_run(state: ReviewState) -> ReviewState:
+    logger.info("graph.create_check_run start head_sha_present=%s", bool(state.head_sha))
     if state.head_sha:
         tr = await gh.set_commit_status(
             owner=state.owner,
@@ -39,10 +53,12 @@ async def create_check_run(state: ReviewState) -> ReviewState:
             description="AI DevOps review running…",
         )
         state.tool_runs.append(tr)
+        logger.info("graph.create_check_run status_pending ok=%s", tr.ok)
     return state
 
 
 async def complete_check_run(state: ReviewState) -> ReviewState:
+    logger.info("graph.complete_check_run start findings=%s", len(state.findings))
     if state.head_sha:
         sev = [str(f.severity) for f in state.findings]
         final_state = "success"
@@ -57,10 +73,12 @@ async def complete_check_run(state: ReviewState) -> ReviewState:
             description=f"AI DevOps review {final_state}. Findings={len(state.findings)}",
         )
         state.tool_runs.append(tr)
+        logger.info("graph.complete_check_run final_state=%s ok=%s", final_state, tr.ok)
     return state
 
 
 async def run_ci_tools(state: ReviewState) -> dict:
+    logger.info("graph.run_ci_tools start")
     repo_url = f"https://github.com/{state.owner}/{state.repo}.git"
     ref = f"refs/pull/{state.pr_number}/head"
 
@@ -74,6 +92,7 @@ async def run_ci_tools(state: ReviewState) -> dict:
     }
 
     ci_findings = build_ci_findings(payload)
+    logger.info("graph.run_ci_tools done ci_ok=%s ci_findings=%s", tr.ok, len(ci_findings))
 
     # Return ONLY what changed (patch update)
     return {
@@ -85,10 +104,12 @@ async def run_ci_tools(state: ReviewState) -> dict:
 
 
 async def run_security_tools(state: ReviewState) -> dict:
+    logger.info("graph.run_security_tools start")
     repo_url = f"https://github.com/{state.owner}/{state.repo}.git"
     ref = f"refs/pull/{state.pr_number}/head"
 
     tr = await sec.run_scans(repo_url=repo_url, ref=ref)
+    logger.info("graph.run_security_tools done security_ok=%s", tr.ok)
 
     # If you later build security findings, add them here too.
     # security_findings = build_security_findings(...)
@@ -102,8 +123,10 @@ async def run_security_tools(state: ReviewState) -> dict:
 
 
 async def rank_findings(state: ReviewState) -> ReviewState:
+    logger.info("graph.rank_findings start findings=%s", len(state.findings))
     order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     state.findings.sort(key=lambda f: order.get(f.severity, 99))
+    logger.info("graph.rank_findings done")
     return state
 
 
@@ -118,6 +141,7 @@ def conclude(state: ReviewState) -> str:
 
 async def converge_scans(state: ReviewState) -> ReviewState:
     """Convergence point for parallel scan execution."""
+    logger.info("graph.converge_scans")
     return {
         "check_run_id": state.check_run_id
     }
@@ -125,17 +149,20 @@ async def converge_scans(state: ReviewState) -> ReviewState:
 
 async def converge_agents(state: ReviewState) -> ReviewState:
     """Convergence point for parallel agent execution."""
+    logger.info("graph.converge_agents")
     return {
         "check_run_id": state.check_run_id
     }
 
 
 async def post_comment(state: ReviewState) -> ReviewState:
+    logger.info("graph.post_comment start has_comment=%s", bool(state.final_comment))
     if state.final_comment:
         tr = await gh.post_comment(
             state.owner, state.repo, state.pr_number, state.final_comment
         )
         state.tool_runs.append(tr)
+        logger.info("graph.post_comment done ok=%s", tr.ok)
     return state
 
 

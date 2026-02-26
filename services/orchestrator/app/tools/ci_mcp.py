@@ -1,29 +1,35 @@
 from __future__ import annotations
 
-import httpx
+import logging
 
 from ..config import settings
 from ..schema import ToolRun
+from .mcp_gateway_client import MCPGatewayClient
+
+logger = logging.getLogger(__name__)
 
 
 class CIMCP:
     def __init__(self):
-        self.base = settings.mcp_ci_url.rstrip("/")
+        self.client = MCPGatewayClient({"ci": settings.mcp_ci_url})
 
     async def run_ci(self, repo_url: str, ref: str) -> ToolRun:
+        logger.info("CIMCP.run_ci repo_url=%s ref=%s", repo_url, ref)
         tr = ToolRun(tool="ci", action="run", ok=False)
-        async with httpx.AsyncClient(timeout=3000) as client:
-            r = await client.post(f"{self.base}/run", json={"repo_url": repo_url, "ref": ref})
-            data = (
-                r.json()
-                if r.headers.get("content-type", "").startswith("application/json")
-                else {}
-            )
-            tr.meta["status"] = r.status_code
+        data = await self.client.invoke(
+            "ci",
+            "ci_run",
+            {"repo_url": repo_url, "ref": ref},
+        )
 
         tr.meta["ref"] = ref
-        tr.ok = bool(data.get("ok", False)) and (200 <= r.status_code < 300)
+        tr.ok = bool(data.get("ok", False))
         tr.stdout = data.get("stdout")
         tr.stderr = data.get("stderr")
         tr.meta["summary"] = data.get("summary", {})
+        logger.info(
+            "CIMCP.run_ci done ok=%s summary_keys=%s",
+            tr.ok,
+            sorted((tr.meta.get("summary") or {}).keys()),
+        )
         return tr

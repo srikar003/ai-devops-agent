@@ -23,13 +23,18 @@ An AI-powered DevOps agent that automatically reviews GitHub Pull Requests using
 
 # Integration Mode
 
-The orchestrator currently integrates with service HTTP endpoints (not MCP transport).
+The orchestrator currently integrates with services through MCP tools (`@mcp.tool`) over streamable HTTP transport.
 
-- `mcp_github`: `/pr`, `/status`, `/comment`, `/check-run`
-- `mcp_ci`: `/run`
-- `mcp_security`: `/scan`
+- `mcp_github`: `github_get_pr_context`, `github_set_commit_status`, `github_post_comment`
+- `mcp_ci`: `ci_run`
+- `mcp_security`: `security_scan`
 
-The `/mcp` endpoints may exist on services for future use, but they are not used by the orchestrator runtime flow.
+REST endpoints may still exist for compatibility, but orchestrator runtime uses MCP tool calls.
+
+Configured MCP roots:
+- `MCP_GITHUB_URL=http://mcp_github:7001/mcp/mcp`
+- `MCP_CI_URL=http://mcp_ci:7002/mcp/mcp`
+- `MCP_SECURITY_URL=http://mcp_security:7003/mcp/mcp`
 
 ---
 
@@ -115,9 +120,9 @@ POST /run
 | Service         | Port | Description                          |
 |----------------|------|--------------------------------------|
 | Orchestrator  | 8000 | LangGraph multi-agent workflow       |
-| MCP GitHub    | 7001 | GitHub API HTTP wrapper              |
-| MCP CI        | 7002 | Deterministic CI runner (HTTP)       |
-| MCP Security  | 7003 | Static security scanning (HTTP)      |
+| MCP GitHub    | 7001 | GitHub MCP server + compatibility REST routes |
+| MCP CI        | 7002 | CI MCP server + compatibility REST routes     |
+| MCP Security  | 7003 | Security MCP server + compatibility REST routes |
 
 ---
 
@@ -126,9 +131,9 @@ POST /run
 ## Orchestrator
 
 ```
-MCP_GITHUB_URL=http://mcp_github:7001
-MCP_CI_URL=http://mcp_ci:7002
-MCP_SECURITY_URL=http://mcp_security:7003
+MCP_GITHUB_URL=http://mcp_github:7001/mcp/mcp
+MCP_CI_URL=http://mcp_ci:7002/mcp/mcp
+MCP_SECURITY_URL=http://mcp_security:7003/mcp/mcp
 
 AWS_REGION=us-east-1
 BEDROCK_MODEL_ID=anthropic.claude-3-5-haiku-20241022-v1:0
@@ -150,7 +155,7 @@ GITHUB_TOKEN=your_grained_personal_access_token
 # 🐳 Run with Docker
 
 ```bash
-docker compose up --build
+docker compose -f infra/docker-compose.yml up --build
 ```
 
 Trigger a review:
@@ -238,8 +243,8 @@ Findings are:
 - Updates dashboard imports
 
 ### Checks Run
-- ci/run: ❌
-- security/scan: ✅
+- ci: ❌
+- security: ✅
 
 ### 🔴 CRITICAL
 None

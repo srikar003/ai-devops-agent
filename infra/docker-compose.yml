@@ -35,9 +35,9 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
 
-      MCP_GITHUB_URL: http://mcp_github:7001
-      MCP_CI_URL: http://mcp_ci:7002
-      MCP_SECURITY_URL: http://mcp_security:7003
+      MCP_GITHUB_URL: http://mcp_github:7001/mcp/mcp
+      MCP_CI_URL: http://mcp_ci:7002/mcp/mcp
+      MCP_SECURITY_URL: http://mcp_security:7003/mcp/mcp
 
       # LLMs
       BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID}   # e.g. "anthropic.claude-3-5-sonnet-20240620-v1:0"
