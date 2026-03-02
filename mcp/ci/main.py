@@ -311,7 +311,7 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
 
             for name, cmd in nx_commands():
                 stdout_all.append(f"\n[ci] {name}: {' '.join(cmd)}\n")
-                code, out, err = run(cmd, cwd=tmpdir, timeout=2400)
+                code, out, err = run(cmd, cwd=tmpdir, timeout=360)
                 stdout_all.append(out)
                 stderr_all.append(err)
 

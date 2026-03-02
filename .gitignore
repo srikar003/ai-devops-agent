@@ -1,1 +1,7 @@
 .env
+mcp/github/__pycache__
+mcp/github/tests/__pycache__
+services/orchestrator/app/__pycache__
+services/orchestrator/app/utils/__pycache__
+services/orchestrator/tests/__pycache__
+notes.md

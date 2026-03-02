@@ -25,6 +25,7 @@ class GitHubMCP:
             "github_get_pr_context",
             {"owner": owner, "repo": repo, "pr": pr_number},
             write_operation=False,
+            timeout_seconds=settings.mcp_github_timeout_seconds,
         )
         logger.info("GitHubMCP.get_pr_context done keys=%s", sorted(data.keys()))
         return data
@@ -51,6 +52,7 @@ class GitHubMCP:
                 "idempotency_key": idempotency_key,
             },
             write_operation=True,
+            timeout_seconds=settings.mcp_github_timeout_seconds,
         )
         ok = bool(data.get("ok", False))
         logger.info(
@@ -99,6 +101,7 @@ class GitHubMCP:
             "github_set_commit_status",
             payload,
             write_operation=True,
+            timeout_seconds=settings.mcp_github_timeout_seconds,
         )
         ok = bool(data.get("ok", False))
         logger.info(

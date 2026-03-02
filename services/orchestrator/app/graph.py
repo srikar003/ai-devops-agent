@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from typing import Literal
+from typing import Any
 from langgraph.graph import StateGraph, END
 from .schema import ReviewState
 from .graph_guard import build_guarded_node_handler
@@ -186,7 +187,7 @@ async def post_comment(state: ReviewState) -> ReviewState:
     return state
 
 
-def build_graph():
+def build_graph(checkpointer: Any | None = None):
     g = StateGraph(ReviewState)
 
     # Nodes
@@ -238,6 +239,8 @@ def build_graph():
     g.add_edge("post_comment", "complete_check_run")
     g.add_edge("complete_check_run", END)
 
+    if checkpointer is not None:
+        return g.compile(checkpointer=checkpointer)
     return g.compile()
 
 

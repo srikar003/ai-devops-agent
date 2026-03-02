@@ -26,6 +26,7 @@ class MCPGatewayClient:
         payload: Dict[str, Any],
         *,
         write_operation: bool = False,
+        timeout_seconds: float | None = None,
     ) -> Dict[str, Any]:
         url = self._servers.get(server)
         if not url:
@@ -48,7 +49,14 @@ class MCPGatewayClient:
             else max(1, settings.retry_attempts)
         )
         out = await retry_async(
-            partial(self.invoke_tool_once, client, server, tool_name, payload),
+            partial(
+                self.invoke_tool_once,
+                client,
+                server,
+                tool_name,
+                payload,
+                timeout_seconds,
+            ),
             attempts=retry_attempts,
             base_delay_seconds=max(0.0, settings.retry_base_delay_seconds),
             max_delay_seconds=max(0.0, settings.retry_max_delay_seconds),
@@ -71,6 +79,7 @@ class MCPGatewayClient:
         server: str,
         tool_name: str,
         payload: Dict[str, Any],
+        timeout_seconds: float | None = None,
     ) -> Dict[str, Any]:
         tools = await client.get_tools()
         tool = next((t for t in tools if t.name == tool_name), None)
@@ -79,9 +88,14 @@ class MCPGatewayClient:
             raise ValueError(
                 f"Tool '{tool_name}' not found on server '{server}'. Available: {available}"
             )
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else max(1.0, settings.mcp_tool_timeout_seconds)
+        )
         result = await asyncio.wait_for(
             tool.ainvoke(payload),
-            timeout=max(1.0, settings.mcp_tool_timeout_seconds),
+            timeout=max(1.0, effective_timeout),
         )
         return self.coerce_to_dict(result)
 

@@ -20,6 +20,7 @@ class SecurityMCP:
             "security_scan",
             {"repo_url": repo_url, "ref": ref},
             write_operation=False,
+            timeout_seconds=settings.mcp_security_timeout_seconds,
         )
         ok = bool(data.get("ok", False))
         logger.info("SecurityMCP.run_scans done ok=%s keys=%s", ok, sorted(data.keys()))

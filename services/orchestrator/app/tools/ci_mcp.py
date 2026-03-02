@@ -21,6 +21,7 @@ class CIMCP:
             "ci_run",
             {"repo_url": repo_url, "ref": ref},
             write_operation=False,
+            timeout_seconds=settings.mcp_ci_timeout_seconds,
         )
 
         tr.meta["ref"] = ref

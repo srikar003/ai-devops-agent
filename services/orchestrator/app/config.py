@@ -17,7 +17,11 @@ class Settings(BaseModel):
     graph_max_calls_per_node: int = int(os.getenv("GRAPH_MAX_CALLS_PER_NODE", "5"))
     graph_recursion_limit: int = int(os.getenv("GRAPH_RECURSION_LIMIT", "80"))
     mcp_tool_timeout_seconds: float = float(os.getenv("MCP_TOOL_TIMEOUT_SECONDS", "120.0"))
+    mcp_github_timeout_seconds: float = float(os.getenv("MCP_GITHUB_TIMEOUT_SECONDS", "120.0"))
+    mcp_ci_timeout_seconds: float = float(os.getenv("MCP_CI_TIMEOUT_SECONDS", "360.0"))
+    mcp_security_timeout_seconds: float = float(os.getenv("MCP_SECURITY_TIMEOUT_SECONDS", "360.0"))
     mcp_write_retry_attempts: int = int(os.getenv("MCP_WRITE_RETRY_ATTEMPTS", "2"))
+    database_url: str = os.getenv("DATABASE_URL", "")
 
 
 settings = Settings()

@@ -58,6 +58,9 @@ services:
       GRAPH_MAX_CALLS_PER_NODE: "5"
       GRAPH_RECURSION_LIMIT: "80"
       MCP_TOOL_TIMEOUT_SECONDS: "120"
+      MCP_GITHUB_TIMEOUT_SECONDS: "120"
+      MCP_CI_TIMEOUT_SECONDS: "360"
+      MCP_SECURITY_TIMEOUT_SECONDS: "360"
       MCP_WRITE_RETRY_ATTEMPTS: "2"
 
       DATABASE_URL: postgresql://devops:devops@postgres:5432/devops_ai

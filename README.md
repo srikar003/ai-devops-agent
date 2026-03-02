@@ -1,284 +1,175 @@
-# 🤖 AI DevOps Multi-Agent PR Reviewer
+# AI DevOps Multi-Agent PR Reviewer
 
-An AI-powered DevOps agent that automatically reviews GitHub Pull Requests using:
+AI-driven pull request review system with deterministic CI/security checks and LLM-based analysis, orchestrated by LangGraph.
 
-- ✅ Deterministic CI checks (install, audit, lint, test, build)
-- ✅ Static security scanning (Semgrep)
-- ✅ LLM-based code review and security reasoning
-- ✅ Structured findings + severity ranking
-- ✅ Automated PR comment generation
-- ✅ Commit status gating (pending → success/failure)
+## What This System Does
 
-## 🔧 Tech Stack
+Given a GitHub PR (`owner`, `repo`, `pr_number`), the orchestrator:
 
-- **LangGraph**
-- **FastAPI**
-- **AWS Bedrock (Claude)**
-- **Docker Compose**
-- **Semgrep**
-- **Nx / Node workspaces**
-- **GitHub API**
+1. Fetches PR context (title, body, files, diff) from GitHub MCP.
+2. Sets commit status to `pending`.
+3. Runs CI and security scans in parallel.
+4. Runs review agents in parallel:
+   - triage
+   - code review
+   - security review
+5. Ranks findings by severity.
+6. Composes and posts a PR comment.
+7. Sets final commit status (`success` or `failure`).
 
----
+## Services
 
-# Integration Mode
+| Service | Port | Purpose |
+|---|---:|---|
+| `orchestrator` | 8000 | LangGraph workflow + API |
+| `mcp_github` | 7001 | GitHub tool operations |
+| `mcp_ci` | 7002 | CI execution over repo clone |
+| `mcp_security` | 7003 | Semgrep-based scanning |
+| `postgres` | 5432 | LangGraph checkpoint memory |
 
-The orchestrator currently integrates with services through MCP tools (`@mcp.tool`) over streamable HTTP transport.
+## Major Reliability and Production Updates Implemented
 
-- `mcp_github`: `github_get_pr_context`, `github_set_commit_status`, `github_post_comment`
-- `mcp_ci`: `ci_run`
-- `mcp_security`: `security_scan`
+### 1. Retry framework
 
-REST endpoints may still exist for compatibility, but orchestrator runtime uses MCP tool calls.
+- Central retry utility in `services/orchestrator/app/utils/retry.py`.
+- Exponential backoff + jitter.
+- Transient error filtering.
+- Retry telemetry context (`attempts`, `elapsed_ms`, `last_error`).
 
-Configured MCP roots:
-- `MCP_GITHUB_URL=http://mcp_github:7001/mcp`
-- `MCP_CI_URL=http://mcp_ci:7002/mcp`
-- `MCP_SECURITY_URL=http://mcp_security:7003/mcp`
+### 2. MCP timeout and retry hardening
 
----
+- `MCPGatewayClient` retries transient failures and enforces timeouts.
+- Per-service timeout controls:
+  - `MCP_GITHUB_TIMEOUT_SECONDS`
+  - `MCP_CI_TIMEOUT_SECONDS`
+  - `MCP_SECURITY_TIMEOUT_SECONDS`
+- CI/security use long timeout windows to avoid cancellation of legitimate long-running jobs.
 
-# 🏆 Why This Project Matters
+### 3. Idempotency for GitHub writes
 
-This is not a basic CI bot.
+- Comment posting deduped with idempotency marker.
+- Commit status updates deduped when latest status already matches.
+- Prevents duplicate side effects during retries.
 
-It is a:
+### 4. Loop/runaway protection
 
-> Multi-Agent AI DevOps System combining deterministic checks with LLM reasoning for automated PR governance.
+- Node call tracking in graph state.
+- Guard logic in `services/orchestrator/app/graph_guard.py`.
+- Enforces:
+  - max total node calls
+  - max calls per node
+- Independent from LangGraph recursion limit.
 
-It demonstrates:
-- Agent orchestration
-- Structured AI outputs
-- DevOps automation
-- Security integration
-- Production-ready microservice architecture
+### 5. Graph checkpoint memory in Postgres
 
----
+- LangGraph Postgres checkpoint saver wired in orchestrator lifespan.
+- Uses `DATABASE_URL`.
+- Thread-scoped persistence via `thread_id` in `/run`.
+- Default thread id fallback: `owner/repo#pr_number`.
 
-# 🏗 Architecture
+### 6. Config standardization
 
-```
-GitHub Pull Request
-        ↓
-AI DevOps Orchestrator (LangGraph)
-        ↓
-┌───────────────────┬───────────────────┬───────────────────┐
-│ MCP GitHub        │ MCP CI            │ MCP Security      │
-│ PR + Status       │ npm/nx/audit      │ Semgrep scan      │
-└───────────────────┴───────────────────┴───────────────────┘
-        ↓
-LLM Agents (Code + Security + Ranking)
-        ↓
-PR Comment + Commit Status
-```
+- Orchestrator config: `services/orchestrator/app/config.py`.
+- MCP service configs:
+  - `mcp/ci/config.py`
+  - `mcp/security/config.py`
+  - `mcp/github/config.py`
+- Runtime values are loaded from env with sensible defaults.
 
----
+### 7. Testing coverage added
 
-# 🔄 Application Flow
+- Retry tests.
+- Graph guard tests.
+- GitHub idempotency tests.
 
-## 1️⃣ Trigger
+See `TESTING.md` for exact commands.
 
-```bash
-POST /run
-{
-  "owner": "your-username",
-  "repo": "your-repo",
-  "pr_number": 1
-}
-```
+## API Endpoints (Orchestrator)
 
----
+### POST `/run`
 
-## 2️⃣ LangGraph Execution Pipeline
-
-1. `fetch_pr`
-2. `create_check_run` → sets commit status to **pending**
-3. `run_ci`
-4. `run_security`
-5. `triage` (LLM summary)
-6. `code_review` (LLM JSON findings)
-7. `security_review`
-8. `rank_findings`
-9. `compose_comment`
-10. `post_comment`
-11. `complete_check_run` → success/failure
-
----
-
-# 🧠 Design Principles
-
-- Deterministic first, AI second
-- Structured findings (not raw text)
-- Policy-driven gating
-- Microservice isolation
-- Extensible multi-agent architecture
-
----
-
-# 📦 Services
-
-| Service         | Port | Description                          |
-|----------------|------|--------------------------------------|
-| Orchestrator  | 8000 | LangGraph multi-agent workflow       |
-| MCP GitHub    | 7001 | GitHub MCP server + compatibility REST routes |
-| MCP CI        | 7002 | CI MCP server + compatibility REST routes     |
-| MCP Security  | 7003 | Security MCP server + compatibility REST routes |
-
----
-
-# ⚙️ Environment Variables
-
-## Orchestrator
-
-```
-MCP_GITHUB_URL=http://mcp_github:7001/mcp
-MCP_CI_URL=http://mcp_ci:7002/mcp
-MCP_SECURITY_URL=http://mcp_security:7003/mcp
-
-AWS_REGION=us-east-1
-BEDROCK_MODEL_ID=anthropic.claude-3-5-haiku-20241022-v1:0
-
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-```
-
----
-
-## MCP GitHub
-
-```
-GITHUB_TOKEN=your_grained_personal_access_token
-```
-
----
-
-# 🐳 Run with Docker
-
-```bash
-docker compose -f infra/docker-compose.yml up --build
-```
-
-Trigger a review:
-
-```bash
-curl -X POST http://localhost:8000/run \
-  -H "Content-Type: application/json" \
-  -d '{"owner":"your-user","repo":"your-repo","pr_number":1}'
-```
-
----
-
-# 🔍 CI Behavior
-
-The CI MCP performs:
-
-- Git clone + checkout PR ref
-- `npm ci`
-- `npm audit` (policy-based)
-- Nx detection
-- `nx run-many -t lint --all`
-- Optional test/build execution
-
-Audit policy (configurable):
-- Fail on **critical only** (recommended default)
-- Report high vulnerabilities without failing
-
----
-
-# 🔐 Security Behavior
-
-The Security MCP:
-
-- Clones repository
-- Runs `semgrep --config auto`
-- Returns structured scan output
-
-The LLM security agent:
-- Analyzes diff + scan output
-- Generates security findings
-- Provides remediation guidance
-
----
-
-# 📊 Findings Model
-
-All issues are converted into structured objects:
+Request:
 
 ```json
 {
-  "type": "CODE_QUALITY | BUG_RISK | SECURITY | PERFORMANCE | TESTING | CI",
-  "severity": "LOW | MEDIUM | HIGH | CRITICAL",
-  "title": "Short summary",
-  "file": "path/to/file",
-  "line": 42,
-  "details": "Explanation",
-  "recommendation": "How to fix"
+  "owner": "your-org",
+  "repo": "your-repo",
+  "pr_number": 123,
+  "thread_id": "optional-thread-id"
 }
 ```
 
-Findings are:
-- Ranked by severity
-- Grouped in PR comment
-- Used for commit status gating
+Response includes:
 
----
+- `final_comment`
+- `findings`
+- `tool_runs`
+- `node_calls`
+- `thread_id`
 
-# 🚦 Commit Status Logic
+### GET `/graph`
 
-| Condition | Status |
-|-----------|--------|
-| CRITICAL findings exist | ❌ failure |
-| HIGH findings (if policy strict) | ❌ failure |
-| Only MEDIUM/LOW findings | ✅ success |
+Returns graph image (`image/png`) generated from LangGraph Mermaid rendering.
 
----
+## Environment Variables
 
-# 🧩 Example PR Comment Output
+### Orchestrator
 
-```markdown
-## 🤖 AI DevOps Review
+- `MCP_GITHUB_URL`
+- `MCP_CI_URL`
+- `MCP_SECURITY_URL`
+- `AWS_REGION`
+- `BEDROCK_MODEL_ID`
+- `DATABASE_URL`
+- `RETRY_ATTEMPTS`
+- `RETRY_BASE_DELAY_SECONDS`
+- `RETRY_MAX_DELAY_SECONDS`
+- `RETRY_JITTER_SECONDS`
+- `GRAPH_MAX_TOTAL_NODE_CALLS`
+- `GRAPH_MAX_CALLS_PER_NODE`
+- `GRAPH_RECURSION_LIMIT`
+- `MCP_TOOL_TIMEOUT_SECONDS`
+- `MCP_GITHUB_TIMEOUT_SECONDS`
+- `MCP_CI_TIMEOUT_SECONDS`
+- `MCP_SECURITY_TIMEOUT_SECONDS`
+- `MCP_WRITE_RETRY_ATTEMPTS`
 
-### Summary
-- Refactors auth module
-- Updates dashboard imports
+### MCP GitHub
 
-### Checks Run
-- ci: ❌
-- security: ✅
+- `GITHUB_TOKEN`
+- `GITHUB_HTTP_TIMEOUT_SECONDS`
+- `GITHUB_RETRY_ATTEMPTS`
 
-### 🔴 CRITICAL
-None
+### MCP CI
 
-### 🟠 HIGH
-- Lint error: @nx/dependency-checks (auth/package.json:8)
-  Missing dependencies declared in package.json
+- `CI_RETRY_ATTEMPTS`
 
-### 🟡 MEDIUM
-- 26 high vulnerabilities found via npm audit
+### MCP Security
 
-### 🟢 LOW
-- Angular template accessibility warnings
+- `SECURITY_CMD_TIMEOUT_SECONDS`
+- `SECURITY_RETRY_ATTEMPTS`
+
+## Run with Docker Compose
+
+```powershell
+docker compose -f infra/docker-compose.yml up --build
 ```
 
----
+Trigger run:
 
-# 🚀 Roadmap
+```powershell
+curl -X POST http://localhost:8000/run `
+  -H "Content-Type: application/json" `
+  -d "{\"owner\":\"your-org\",\"repo\":\"your-repo\",\"pr_number\":1}"
+```
 
-### 🔐 Phase 2 — Advanced Security Intelligence
+Fetch graph image:
 
-- Add secrets scanning (Gitleaks)
-- Integrate container/IaC scanning (Trivy)
-- Normalize all tools into unified SECURITY findings
-- Implement deterministic policy engine (fail on critical)
-- Add allowlist + vulnerability metadata (CVE, fix version)
+```powershell
+curl http://localhost:8000/graph --output graph.png
+```
 
+## Notes
 
-### 🖥 Phase 3 — Full Application Layer (React + Node + Postgres)
-
-- Build Node API to persist PR runs and findings
-- Store review history in Postgres
-- Create React dashboard for visibility
-- Provide filtering by repo, severity, status
-- Enable re-run reviews + analytics tracking
-
----
+- If checkpoint initialization fails with psycopg errors, ensure orchestrator dependencies are rebuilt (`psycopg[binary]` is required).
+- Recursion limit must be high enough for normal graph execution path. Keep `GRAPH_RECURSION_LIMIT` above trivial values like `5`.
