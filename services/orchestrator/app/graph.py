@@ -1,7 +1,10 @@
 from __future__ import annotations
+import hashlib
 import logging
+from typing import Literal
 from langgraph.graph import StateGraph, END
 from .schema import ReviewState
+from .graph_guard import build_guarded_node_handler
 from .tools.github_mcp import GitHubMCP
 from .tools.ci_mcp import CIMCP
 from .tools.security_mcp import SecurityMCP
@@ -22,12 +25,23 @@ ci = CIMCP()
 sec = SecurityMCP()
 
 
+def next_after_compose(state: ReviewState) -> Literal["post_comment", "complete_check_run"]:
+    return "post_comment" if state.findings else "complete_check_run"
+
+
 async def fetch_pr(state: ReviewState) -> ReviewState:
-    logger.info("graph.fetch_pr start owner=%s repo=%s pr=%s", state.owner, state.repo, state.pr_number)
+    logger.info(
+        "graph.fetch_pr start owner=%s repo=%s pr=%s",
+        state.owner,
+        state.repo,
+        state.pr_number,
+    )
     ctx = await gh.get_pr_context(state.owner, state.repo, state.pr_number)
     if "head_sha" not in ctx:
         logger.error("graph.fetch_pr missing head_sha ctx_keys=%s", sorted(ctx.keys()))
-        raise ValueError(f"Missing 'head_sha' in GitHub MCP response. keys={sorted(ctx.keys())}")
+        raise ValueError(
+            f"Missing 'head_sha' in GitHub MCP response. keys={sorted(ctx.keys())}"
+        )
     state.pr_title = ctx.get("title")
     state.pr_body = ctx.get("body")
     state.diff = ctx.get("diff")
@@ -43,7 +57,9 @@ async def fetch_pr(state: ReviewState) -> ReviewState:
 
 
 async def create_check_run(state: ReviewState) -> ReviewState:
-    logger.info("graph.create_check_run start head_sha_present=%s", bool(state.head_sha))
+    logger.info(
+        "graph.create_check_run start head_sha_present=%s", bool(state.head_sha)
+    )
     if state.head_sha:
         tr = await gh.set_commit_status(
             owner=state.owner,
@@ -92,7 +108,9 @@ async def run_ci_tools(state: ReviewState) -> dict:
     }
 
     ci_findings = build_ci_findings(payload)
-    logger.info("graph.run_ci_tools done ci_ok=%s ci_findings=%s", tr.ok, len(ci_findings))
+    logger.info(
+        "graph.run_ci_tools done ci_ok=%s ci_findings=%s", tr.ok, len(ci_findings)
+    )
 
     # Return ONLY what changed (patch update)
     return {
@@ -142,24 +160,26 @@ def conclude(state: ReviewState) -> str:
 async def converge_scans(state: ReviewState) -> ReviewState:
     """Convergence point for parallel scan execution."""
     logger.info("graph.converge_scans")
-    return {
-        "check_run_id": state.check_run_id
-    }
+    return {"check_run_id": state.check_run_id}
 
 
 async def converge_agents(state: ReviewState) -> ReviewState:
     """Convergence point for parallel agent execution."""
     logger.info("graph.converge_agents")
-    return {
-        "check_run_id": state.check_run_id
-    }
+    return {"check_run_id": state.check_run_id}
 
 
 async def post_comment(state: ReviewState) -> ReviewState:
     logger.info("graph.post_comment start has_comment=%s", bool(state.final_comment))
     if state.final_comment:
+        source = f"{state.owner}/{state.repo}#{state.pr_number}:{state.head_sha or ''}:{state.final_comment}"
+        idempotency_key = hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
         tr = await gh.post_comment(
-            state.owner, state.repo, state.pr_number, state.final_comment
+            state.owner,
+            state.repo,
+            state.pr_number,
+            state.final_comment,
+            idempotency_key=idempotency_key,
         )
         state.tool_runs.append(tr)
         logger.info("graph.post_comment done ok=%s", tr.ok)
@@ -170,19 +190,23 @@ def build_graph():
     g = StateGraph(ReviewState)
 
     # Nodes
-    g.add_node("create_check_run", create_check_run)
-    g.add_node("complete_check_run", complete_check_run)
-    g.add_node("fetch_pr", fetch_pr)
-    g.add_node("run_ci", run_ci_tools)
-    g.add_node("run_security", run_security_tools)
-    g.add_node("converge_scans", converge_scans)
-    g.add_node("triage", triage_agent)
-    g.add_node("code_review", code_review_agent)
-    g.add_node("security_review", security_agent)
-    g.add_node("converge_agents", converge_agents)
-    g.add_node("rank_findings", rank_findings)
-    g.add_node("compose_comment", compose_comment)
-    g.add_node("post_comment", post_comment)
+    nodes = {
+        "create_check_run": create_check_run,
+        "complete_check_run": complete_check_run,
+        "fetch_pr": fetch_pr,
+        "run_ci": run_ci_tools,
+        "run_security": run_security_tools,
+        "converge_scans": converge_scans,
+        "triage": triage_agent,
+        "code_review": code_review_agent,
+        "security_review": security_agent,
+        "converge_agents": converge_agents,
+        "rank_findings": rank_findings,
+        "compose_comment": compose_comment,
+        "post_comment": post_comment,
+    }
+    for node_name, node_callable in nodes.items():
+        g.add_node(node_name, build_guarded_node_handler(node_name, node_callable))
 
     # Entry
     g.set_entry_point("fetch_pr")
@@ -209,12 +233,14 @@ def build_graph():
     g.add_edge("rank_findings", "compose_comment")
 
     # Conditional: post comment only if findings exist
-    g.add_conditional_edges(
-        "compose_comment",
-        lambda state: "post_comment" if state.findings else "complete_check_run",
-    )
+    g.add_conditional_edges("compose_comment", next_after_compose)
 
     g.add_edge("post_comment", "complete_check_run")
     g.add_edge("complete_check_run", END)
 
     return g.compile()
+
+
+def render_graph_png(xray: bool = True) -> bytes:
+    graph = build_graph()
+    return graph.get_graph(xray=xray).draw_mermaid_png()

@@ -20,6 +20,7 @@ class CIMCP:
             "ci",
             "ci_run",
             {"repo_url": repo_url, "ref": ref},
+            write_operation=False,
         )
 
         tr.meta["ref"] = ref

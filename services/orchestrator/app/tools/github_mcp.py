@@ -17,31 +17,53 @@ class GitHubMCP:
     async def get_pr_context(
         self, owner: str, repo: str, pr_number: int
     ) -> Dict[str, Any]:
-        logger.info("GitHubMCP.get_pr_context owner=%s repo=%s pr=%s", owner, repo, pr_number)
+        logger.info(
+            "GitHubMCP.get_pr_context owner=%s repo=%s pr=%s", owner, repo, pr_number
+        )
         data = await self.client.invoke(
             "github",
             "github_get_pr_context",
             {"owner": owner, "repo": repo, "pr": pr_number},
+            write_operation=False,
         )
         logger.info("GitHubMCP.get_pr_context done keys=%s", sorted(data.keys()))
         return data
 
     async def post_comment(
-        self, owner: str, repo: str, pr_number: int, body: str
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        body: str,
+        idempotency_key: str | None = None,
     ) -> ToolRun:
-        logger.info("GitHubMCP.post_comment owner=%s repo=%s pr=%s", owner, repo, pr_number)
+        logger.info(
+            "GitHubMCP.post_comment owner=%s repo=%s pr=%s", owner, repo, pr_number
+        )
         data = await self.client.invoke(
             "github",
             "github_post_comment",
-            {"owner": owner, "repo": repo, "pr": pr_number, "body": body},
+            {
+                "owner": owner,
+                "repo": repo,
+                "pr": pr_number,
+                "body": body,
+                "idempotency_key": idempotency_key,
+            },
+            write_operation=True,
         )
         ok = bool(data.get("ok", False))
-        logger.info("GitHubMCP.post_comment done ok=%s keys=%s", ok, sorted(data.keys()))
+        logger.info(
+            "GitHubMCP.post_comment done ok=%s keys=%s", ok, sorted(data.keys())
+        )
         return ToolRun(
             tool="github",
             action="comment",
             ok=ok,
-            meta={"comment_id": data.get("id")},
+            meta={
+                "comment_id": data.get("id"),
+                "deduped": bool(data.get("deduped", False)),
+            },
             stdout=str(data) if ok else None,
             stderr=None if ok else str(data),
         )
@@ -72,14 +94,25 @@ class GitHubMCP:
             "description": description,
             "target_url": target_url,
         }
-        data = await self.client.invoke("github", "github_set_commit_status", payload)
+        data = await self.client.invoke(
+            "github",
+            "github_set_commit_status",
+            payload,
+            write_operation=True,
+        )
         ok = bool(data.get("ok", False))
-        logger.info("GitHubMCP.set_commit_status done ok=%s keys=%s", ok, sorted(data.keys()))
+        logger.info(
+            "GitHubMCP.set_commit_status done ok=%s keys=%s", ok, sorted(data.keys())
+        )
         return ToolRun(
             tool="github",
             action="status",
             ok=ok,
-            meta={"state": state, "context": context},
+            meta={
+                "state": state,
+                "context": context,
+                "deduped": bool(data.get("deduped", False)),
+            },
             stdout=str(data) if ok else None,
             stderr=None if ok else str(data),
         )

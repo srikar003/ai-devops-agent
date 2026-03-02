@@ -2,6 +2,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
+from config import settings
 
 app = FastAPI(title="MCP CI")
 mcp = FastMCP(name="ci-mcp", stateless_http=True)
@@ -19,9 +21,32 @@ class RunReq(BaseModel):
     ref: str
 
 
-def run(cmd: List[str], cwd: str | None = None, timeout: int = 1800) -> tuple[int, str, str]:
+def run(
+    cmd: List[str], cwd: str | None = None, timeout: int = 1800
+) -> tuple[int, str, str]:
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
     return p.returncode, p.stdout, p.stderr
+
+
+def run_with_retries(
+    cmd: List[str],
+    *,
+    cwd: str | None = None,
+    timeout: int = 1800,
+    attempts: int | None = None,
+) -> tuple[int, str, str, int]:
+    max_attempts = max(1, attempts or settings.ci_retry_attempts)
+    combined_out: List[str] = []
+    combined_err: List[str] = []
+    for attempt in range(1, max_attempts + 1):
+        code, out, err = run(cmd, cwd=cwd, timeout=timeout)
+        combined_out.append(out)
+        combined_err.append(err)
+        if code == 0:
+            return 0, "\n".join(combined_out), "\n".join(combined_err), attempt
+        if attempt < max_attempts:
+            time.sleep(0.5 * (2 ** (attempt - 1)))
+    return code, "\n".join(combined_out), "\n".join(combined_err), max_attempts
 
 
 def detect_pm(repo_dir: str) -> str:
@@ -116,27 +141,48 @@ def nx_commands() -> List[Tuple[str, List[str]]]:
     ]
 
 
+def record_step(
+    steps: List[Dict[str, Any]],
+    name: str,
+    step_success: bool,
+    extra: dict | None = None,
+) -> None:
+    entry = {"name": name, "ok": step_success}
+    if extra:
+        entry.update(extra)
+    steps.append(entry)
+
+
 def run_ci_impl(repo_url: str, ref: str) -> dict:
     tmpdir = tempfile.mkdtemp(prefix="ci_")
     stdout_all: List[str] = []
     stderr_all: List[str] = []
     steps: List[Dict[str, Any]] = []
-    ok = True
-
-    def record_step(name: str, step_ok: bool, extra: dict | None = None):
-        nonlocal ok
-        if not step_ok:
-            ok = False
-        entry = {"name": name, "ok": step_ok}
-        if extra:
-            entry.update(extra)
-        steps.append(entry)
 
     try:
-        code, out, err = run(["git", "clone", "--depth", "1", repo_url, tmpdir], timeout=300)
+        tries = 0
+        clone_out: List[str] = []
+        clone_err: List[str] = []
+        for tries in range(1, max(1, settings.ci_retry_attempts) + 1):
+            for p in Path(tmpdir).iterdir():
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+            code, out, err = run(
+                ["git", "clone", "--depth", "1", repo_url, tmpdir], timeout=300
+            )
+            clone_out.append(out)
+            clone_err.append(err)
+            if code == 0:
+                break
+            if tries < max(1, settings.ci_retry_attempts):
+                time.sleep(0.5 * (2 ** (tries - 1)))
+        out = "\n".join(clone_out)
+        err = "\n".join(clone_err)
         stdout_all.append(out)
         stderr_all.append(err)
-        record_step("git-clone", code == 0, {"exit_code": code})
+        record_step(steps, "git-clone", code == 0, {"exit_code": code, "attempts": tries})
         if code != 0:
             return {
                 "ok": False,
@@ -145,10 +191,17 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
                 "stderr": "\n".join(stderr_all),
             }
 
-        code, out, err = run(["git", "fetch", "origin", ref], cwd=tmpdir, timeout=300)
+        code, out, err, tries = run_with_retries(
+            ["git", "fetch", "origin", ref], cwd=tmpdir, timeout=300
+        )
         stdout_all.append(out)
         stderr_all.append(err)
-        record_step("git-fetch-ref", code == 0, {"exit_code": code, "ref": ref})
+        record_step(
+            steps,
+            "git-fetch-ref",
+            code == 0,
+            {"exit_code": code, "ref": ref, "attempts": tries},
+        )
         if code != 0:
             return {
                 "ok": False,
@@ -160,7 +213,7 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
         code, out, err = run(["git", "checkout", "FETCH_HEAD"], cwd=tmpdir, timeout=120)
         stdout_all.append(out)
         stderr_all.append(err)
-        record_step("git-checkout", code == 0, {"exit_code": code})
+        record_step(steps, "git-checkout", code == 0, {"exit_code": code})
         if code != 0:
             return {
                 "ok": False,
@@ -171,7 +224,7 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
 
         if not (Path(tmpdir) / "package.json").exists():
             stdout_all.append("\n[ci] No package.json detected; skipping node CI.\n")
-            record_step("detect-node-project", True, {"node_project": False})
+            record_step(steps, "detect-node-project", True, {"node_project": False})
             return {
                 "ok": True,
                 "summary": {"package_manager": None, "steps": steps},
@@ -181,14 +234,22 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
 
         pm = detect_pm(tmpdir)
         stdout_all.append(f"\n[ci] detected package manager: {pm}\n")
-        record_step("detect-node-project", True, {"node_project": True, "package_manager": pm})
+        record_step(
+            steps,
+            "detect-node-project", True, {"node_project": True, "package_manager": pm}
+        )
 
         install_cmd = cmd_install(pm)
         stdout_all.append(f"\n[ci] install: {' '.join(install_cmd)}\n")
-        code, out, err = run(install_cmd, cwd=tmpdir, timeout=1800)
+        code, out, err, tries = run_with_retries(install_cmd, cwd=tmpdir, timeout=1800)
         stdout_all.append(out)
         stderr_all.append(err)
-        record_step("install", code == 0, {"exit_code": code, "cmd": install_cmd})
+        record_step(
+            steps,
+            "install",
+            code == 0,
+            {"exit_code": code, "cmd": install_cmd, "attempts": tries},
+        )
         if code != 0:
             return {
                 "ok": False,
@@ -207,6 +268,7 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
             audit_summary = parse_npm_audit(data)
             audit_fail = audit_summary["critical"] > 0
             record_step(
+                steps,
                 "npm-audit",
                 (not audit_fail),
                 {
@@ -234,14 +296,18 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
                 code, out, err = run(cmd, cwd=tmpdir, timeout=1800)
                 stdout_all.append(out)
                 stderr_all.append(err)
-                record_step(f"script-{s}", code == 0, {"exit_code": code, "cmd": cmd})
+                record_step(
+                    steps, f"script-{s}", code == 0, {"exit_code": code, "cmd": cmd}
+                )
                 ran_any_checks = True
                 if code != 0:
                     break
 
         if not ran_any_checks and is_nx_workspace(tmpdir):
-            stdout_all.append("\n[ci] Nx workspace detected; running nx run-many fallbacks.\n")
-            record_step("nx-detected", True)
+            stdout_all.append(
+                "\n[ci] Nx workspace detected; running nx run-many fallbacks.\n"
+            )
+            record_step(steps, "nx-detected", True)
 
             for name, cmd in nx_commands():
                 stdout_all.append(f"\n[ci] {name}: {' '.join(cmd)}\n")
@@ -251,6 +317,7 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
 
                 if code != 0 and looks_like_missing_target(out + "\n" + err):
                     record_step(
+                        steps,
                         name,
                         True,
                         {
@@ -262,7 +329,7 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
                     )
                     continue
 
-                record_step(name, code == 0, {"exit_code": code, "cmd": cmd})
+                record_step(steps, name, code == 0, {"exit_code": code, "cmd": cmd})
                 ran_any_checks = True
                 if code != 0:
                     break
@@ -271,18 +338,19 @@ def run_ci_impl(repo_url: str, ref: str) -> dict:
             stdout_all.append(
                 "\n[ci] No lint/test/typecheck/build scripts found and no Nx checks ran. Install-only.\n"
             )
-            record_step("checks-none", True, {"note": "install_only"})
+            record_step(steps, "checks-none", True, {"note": "install_only"})
 
         summary = {"package_manager": pm, "audit": audit_summary, "steps": steps}
+        overall_success = all(bool(step.get("ok")) for step in steps)
         return {
-            "ok": ok,
+            "ok": overall_success,
             "summary": summary,
             "stdout": "\n".join(stdout_all),
             "stderr": "\n".join(stderr_all),
         }
     except subprocess.TimeoutExpired as e:
         stderr_all.append(f"\nTIMEOUT: {e}\n")
-        record_step("timeout", False, {"error": str(e)})
+        record_step(steps, "timeout", False, {"error": str(e)})
         return {
             "ok": False,
             "summary": {"steps": steps},

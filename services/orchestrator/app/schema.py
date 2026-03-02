@@ -49,8 +49,10 @@ class ReviewState(BaseModel):
     # ✅ reducers: multiple parallel updates are merged by concatenation
     tool_runs: Annotated[List[ToolRun], operator.add] = Field(default_factory=list)
     findings: Annotated[List[Finding], operator.add] = Field(default_factory=list)
-    patches: Annotated[List[PatchSuggestion], operator.add] = Field(default_factory=list)
-
+    patches: Annotated[List[PatchSuggestion], operator.add] = Field(
+        default_factory=list
+    )
+    node_calls: Annotated[List[str], operator.add] = Field(default_factory=list)
 
     final_comment: Optional[str] = None
     head_sha: Optional[str] = None
