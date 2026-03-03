@@ -27,29 +27,32 @@ def validate_node_call_limits(state: ReviewState, node_name: str) -> None:
 
 
 def merge_node_call_record(
-    node_output: ReviewState | dict,
+    node_output: dict,
     node_name: str,
-) -> ReviewState | dict:
-    if isinstance(node_output, dict):
-        existing_calls = node_output.get("node_calls") or []
-        return {**node_output, "node_calls": [*existing_calls, node_name]}
-
-    node_output.node_calls.append(node_name)
-    return node_output
+) -> dict:
+    return {
+        **node_output,
+        # Reducer fields must return only delta updates per step.
+        "node_calls": [node_name],
+    }
 
 
 async def execute_node_with_guard(
     state: ReviewState,
     node_name: str,
-    node_callable: Callable[[ReviewState], Awaitable[ReviewState | dict]],
-) -> ReviewState | dict:
+    node_callable: Callable[[ReviewState], Awaitable[dict]],
+) -> dict:
     validate_node_call_limits(state, node_name)
     node_output = await node_callable(state)
-    return merge_node_call_record(node_output, node_name)
+    if isinstance(node_output, dict):
+        return merge_node_call_record(node_output, node_name)
+    raise TypeError(
+        f"Graph node '{node_name}' must return dict delta update, got {type(node_output).__name__}"
+    )
 
 
 def build_guarded_node_handler(
     node_name: str,
-    node_callable: Callable[[ReviewState], Awaitable[ReviewState | dict]],
-) -> Callable[[ReviewState], Awaitable[ReviewState | dict]]:
+    node_callable: Callable[[ReviewState], Awaitable[dict]],
+) -> Callable[[ReviewState], Awaitable[dict]]:
     return partial(execute_node_with_guard, node_name=node_name, node_callable=node_callable)

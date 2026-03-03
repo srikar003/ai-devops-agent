@@ -1,16 +1,24 @@
 from __future__ import annotations
-from ..schema import ReviewState
+
 from ..llm.bedrock import BedrockLLM
+from ..schema import ReviewState
 
 bedrock = BedrockLLM()
 
 
 def compose_comment_prompt(state: ReviewState) -> str:
     tool_summary = "\n".join(
-        f"- {tr.tool}/{tr.action}: {'✅' if tr.ok else '❌'}" for tr in state.tool_runs
+        f"- {tool_run.tool}/{tool_run.action}: {'OK' if tool_run.ok else 'FAIL'}"
+        for tool_run in state.tool_runs
+    )
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    ordered_findings = sorted(
+        state.findings,
+        key=lambda finding: severity_order.get(str(finding.severity), 99),
     )
     findings = [
-        f.model_dump() if hasattr(f, "model_dump") else f for f in state.findings[:20]
+        finding.model_dump() if hasattr(finding, "model_dump") else finding
+        for finding in ordered_findings[:20]
     ]
 
     return f"""

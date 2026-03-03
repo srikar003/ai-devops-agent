@@ -6,10 +6,10 @@ from .schema import Finding, Severity, FindingType
 
 import re
 
-_SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 
-def _ft(value: str) -> Any:
+def finding_type_value(value: str) -> Any:
     """
     Supports FindingType as Enum OR str/Literal.
     """
@@ -19,7 +19,7 @@ def _ft(value: str) -> Any:
         return value
 
 
-def _sev(value: str) -> Any:
+def severity_value(value: str) -> Any:
     """
     Supports Severity as Enum OR str/Literal.
     - If Severity is an Enum, Severity(value) works.
@@ -31,12 +31,12 @@ def _sev(value: str) -> Any:
         return value
 
 
-def _sev_from_audit(high: int, critical: int):
+def severity_from_audit(high: int, critical: int):
     if critical and critical > 0:
-        return _sev("CRITICAL")
+        return severity_value("CRITICAL")
     if high and high > 0:
-        return _sev("HIGH")
-    return _sev("MEDIUM")
+        return severity_value("HIGH")
+    return severity_value("MEDIUM")
 
 
 def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
@@ -68,7 +68,7 @@ def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
         total = int(audit.get("total") or (low + moderate + high + critical))
 
         if total > 0:
-            sev = _sev_from_audit(high=high, critical=critical)
+            sev = severity_from_audit(high=high, critical=critical)
 
             rec = []
             if pm == "npm":
@@ -84,7 +84,7 @@ def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
 
             findings.append(
                 Finding(
-                    type=_ft("SECURITY"),  # or FindingType.CI if you prefer
+                    type=finding_type_value("SECURITY"),  # or FindingType.CI if you prefer
                     severity=sev,
                     title=f"Dependency vulnerabilities detected by {pm or 'package manager'} audit",
                     details=(
@@ -104,9 +104,9 @@ def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
             continue
 
         # choose severity: install failure is critical-ish; test/build failures high
-        sev = _sev("HIGH")
+        sev = severity_value("HIGH")
         if name in {"git-clone", "git-fetch-ref", "git-checkout", "install"}:
-            sev = _sev("CRITICAL")
+            sev = severity_value("CRITICAL")
 
         cmd = s.get("cmd")
         exit_code = s.get("exit_code")
@@ -114,7 +114,7 @@ def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
 
         findings.append(
             Finding(
-                type=_ft("CI"),
+                type=finding_type_value("CI"),
                 severity=sev,
                 title=f"CI step failed: {name}",
                 details=f"Step `{name}` failed with exit_code={exit_code}.{cmd_txt}",
@@ -129,7 +129,7 @@ def build_ci_findings(ci_payload: Dict[str, Any]) -> List[Finding]:
 
     # Sort: CRITICAL -> LOW
     findings.sort(
-        key=lambda f: _SEV_ORDER.get(
+        key=lambda f: severity_order.get(
             f.severity.value if hasattr(f.severity, "value") else str(f.severity), 99
         )
     )

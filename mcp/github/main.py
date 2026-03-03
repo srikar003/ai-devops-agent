@@ -25,11 +25,11 @@ def ensure_token() -> None:
         )
 
 
-def _is_transient_http_status(code: int) -> bool:
+def is_transient_http_status(code: int) -> bool:
     return code in settings.github_transient_status_codes
 
 
-async def _request_with_retry(
+async def request_with_retry(
     method: str,
     url: str,
     *,
@@ -47,7 +47,7 @@ async def _request_with_retry(
                     headers=headers_in,
                     json=json_body,
                 )
-            if _is_transient_http_status(resp.status_code) and attempt < attempts:
+            if is_transient_http_status(resp.status_code) and attempt < attempts:
                 retry_after = resp.headers.get("Retry-After")
                 delay = (
                     float(retry_after)
@@ -112,7 +112,7 @@ async def do_set_commit_status(
     ensure_token()
     # Idempotency: if current top status for this context already matches, skip creating another status.
     combined_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}/status"
-    combined_resp = await _request_with_retry("GET", combined_url, headers_in=headers())
+    combined_resp = await request_with_retry("GET", combined_url, headers_in=headers())
     if combined_resp.status_code == 200:
         combined_data = combined_resp.json() or {}
         for status_item in combined_data.get("statuses", []):
@@ -134,7 +134,7 @@ async def do_set_commit_status(
     if target_url:
         payload["target_url"] = target_url
 
-    r = await _request_with_retry("POST", url, headers_in=headers(), json_body=payload)
+    r = await request_with_retry("POST", url, headers_in=headers(), json_body=payload)
     if r.status_code not in (200, 201):
         raise HTTPException(status_code=r.status_code, detail=r.text)
     return {"ok": True, "deduped": False}
@@ -143,14 +143,14 @@ async def do_set_commit_status(
 async def do_get_pr_context(owner: str, repo: str, pr: int) -> dict:
     ensure_token()
     pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr}"
-    pr_resp = await _request_with_retry("GET", pr_url, headers_in=headers())
+    pr_resp = await request_with_retry("GET", pr_url, headers_in=headers())
     if pr_resp.status_code != 200:
         raise HTTPException(status_code=pr_resp.status_code, detail=pr_resp.text)
     pr_data = pr_resp.json()
     head_sha = (pr_data.get("head") or {}).get("sha")
 
     files_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr}/files"
-    files_resp = await _request_with_retry("GET", files_url, headers_in=headers())
+    files_resp = await request_with_retry("GET", files_url, headers_in=headers())
     if files_resp.status_code != 200:
         raise HTTPException(status_code=files_resp.status_code, detail=files_resp.text)
     files_data = files_resp.json()
@@ -158,7 +158,7 @@ async def do_get_pr_context(owner: str, repo: str, pr: int) -> dict:
 
     diff_headers = dict(headers())
     diff_headers["Accept"] = "application/vnd.github.v3.diff"
-    diff_resp = await _request_with_retry("GET", pr_url, headers_in=diff_headers)
+    diff_resp = await request_with_retry("GET", pr_url, headers_in=diff_headers)
     if diff_resp.status_code != 200:
         raise HTTPException(status_code=diff_resp.status_code, detail=diff_resp.text)
 
@@ -171,7 +171,7 @@ async def do_get_pr_context(owner: str, repo: str, pr: int) -> dict:
     }
 
 
-def _idempotency_marker(idempotency_key: str) -> str:
+def idempotency_marker(idempotency_key: str) -> str:
     return f"<!-- ai-devops-idempotency:{idempotency_key} -->"
 
 
@@ -187,11 +187,11 @@ async def do_post_comment(
     final_body = body
     marker = ""
     if idempotency_key:
-        marker = _idempotency_marker(idempotency_key)
+        marker = idempotency_marker(idempotency_key)
         if marker not in final_body:
             final_body = f"{body.rstrip()}\n\n{marker}"
 
-        comments_resp = await _request_with_retry("GET", url, headers_in=headers())
+        comments_resp = await request_with_retry("GET", url, headers_in=headers())
         if comments_resp.status_code == 200:
             comments_data = comments_resp.json() or []
             for c in reversed(comments_data[-50:]):
@@ -199,7 +199,7 @@ async def do_post_comment(
                 if marker and marker in existing_body:
                     return {"ok": True, "id": c.get("id"), "deduped": True}
 
-    r = await _request_with_retry(
+    r = await request_with_retry(
         "POST", url, headers_in=headers(), json_body={"body": final_body}
     )
     if r.status_code not in (200, 201):
@@ -224,14 +224,14 @@ async def do_upsert_check_run(req: CheckRunReq) -> dict:
         payload["conclusion"] = req.conclusion or "neutral"
 
     if req.check_run_id:
-        r = await _request_with_retry(
+        r = await request_with_retry(
             "PATCH",
             f"{base}/{req.check_run_id}",
             headers_in=headers(),
             json_body=payload,
         )
     else:
-        r = await _request_with_retry(
+        r = await request_with_retry(
             "POST",
             base,
             headers_in=headers(),

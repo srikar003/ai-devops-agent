@@ -13,8 +13,8 @@ Given a GitHub PR (`owner`, `repo`, `pr_number`), the orchestrator:
    - triage
    - code review
    - security review
-5. Ranks findings by severity.
-6. Composes and posts a PR comment.
+5. Composes findings into a comment with severity ordering (CRITICAL -> LOW).
+6. Posts a PR comment if findings exist.
 7. Sets final commit status (`success` or `failure`).
 
 ## Services
@@ -59,6 +59,7 @@ Given a GitHub PR (`owner`, `repo`, `pr_number`), the orchestrator:
   - max total node calls
   - max calls per node
 - Independent from LangGraph recursion limit.
+- Nodes return delta updates; guard appends only the current node name per step.
 
 ### 5. Graph checkpoint memory in Postgres
 
@@ -66,6 +67,10 @@ Given a GitHub PR (`owner`, `repo`, `pr_number`), the orchestrator:
 - Uses `DATABASE_URL`.
 - Thread-scoped persistence via `thread_id` in `/run`.
 - Default thread id fallback: `owner/repo#pr_number`.
+- Startup path is intentionally simple:
+  - `AsyncPostgresSaver.from_conn_string(...)`
+  - `await checkpoint_saver.setup()`
+  - `build_graph(checkpointer=checkpoint_saver)`
 
 ### 6. Config standardization
 
@@ -105,7 +110,11 @@ Response includes:
 - `findings`
 - `tool_runs`
 - `node_calls`
+- `node_calls_history`
 - `thread_id`
+
+`node_calls` is the node call list for the current `/run`.  
+`node_calls_history` is the full persisted node call history for the same `thread_id`.
 
 ### GET `/graph`
 
@@ -173,3 +182,42 @@ curl http://localhost:8000/graph --output graph.png
 
 - If checkpoint initialization fails with psycopg errors, ensure orchestrator dependencies are rebuilt (`psycopg[binary]` is required).
 - Recursion limit must be high enough for normal graph execution path. Keep `GRAPH_RECURSION_LIMIT` above trivial values like `5`.
+
+## Reset and Inspect Checkpoint Memory (Postgres)
+
+Discovered checkpoint tables:
+
+- `checkpoint_migrations`
+- `checkpoints`
+- `checkpoint_blobs`
+- `checkpoint_writes`
+
+List checkpoint tables:
+
+```powershell
+docker compose -f infra/docker-compose.yml exec postgres psql -U devops -d devops_ai -c "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename ILIKE 'checkpoint%';"
+```
+
+Truncate runtime checkpoint data (recommended for fresh test runs, keeps migration history):
+
+```powershell
+docker compose -f infra/docker-compose.yml exec postgres psql -U devops -d devops_ai -c "TRUNCATE TABLE checkpoints, checkpoint_blobs, checkpoint_writes RESTART IDENTITY CASCADE;"
+```
+
+Truncate all checkpoint tables including migrations (full wipe):
+
+```powershell
+docker compose -f infra/docker-compose.yml exec postgres psql -U devops -d devops_ai -c "TRUNCATE TABLE checkpoint_migrations, checkpoints, checkpoint_blobs, checkpoint_writes RESTART IDENTITY CASCADE;"
+```
+
+Get row counts for each checkpoint table:
+
+```powershell
+docker compose -f infra/docker-compose.yml exec postgres psql -U devops -d devops_ai -c "SELECT 'checkpoint_migrations' AS table_name, count(*) AS row_count FROM checkpoint_migrations UNION ALL SELECT 'checkpoints', count(*) FROM checkpoints UNION ALL SELECT 'checkpoint_blobs', count(*) FROM checkpoint_blobs UNION ALL SELECT 'checkpoint_writes', count(*) FROM checkpoint_writes ORDER BY table_name;"
+```
+
+Get row count for one table:
+
+```powershell
+docker compose -f infra/docker-compose.yml exec postgres psql -U devops -d devops_ai -c "SELECT count(*) AS row_count FROM checkpoints;"
+```
