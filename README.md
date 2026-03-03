@@ -14,8 +14,9 @@ Given a GitHub PR (`owner`, `repo`, `pr_number`), the orchestrator:
    - code review
    - security review
 5. Composes findings into a comment with severity ordering (CRITICAL -> LOW).
-6. Posts a PR comment if findings exist.
-7. Sets final commit status (`success` or `failure`).
+6. Pauses for human review of the generated comment (interrupt).
+7. Posts a PR comment only if approved.
+8. Sets final commit status (`success` or `failure`).
 
 ## Services
 
@@ -106,15 +107,40 @@ Request:
 
 Response includes:
 
+- `requires_human_review`
 - `final_comment`
+- `comment_approved`
 - `findings`
 - `tool_runs`
 - `node_calls`
 - `node_calls_history`
 - `thread_id`
+- `next_action`
 
 `node_calls` is the node call list for the current `/run`.  
 `node_calls_history` is the full persisted node call history for the same `thread_id`.
+
+When `requires_human_review=true`, the run is paused at human review and must be resumed with `POST /run/decision`.
+
+### POST `/run/decision`
+
+Resume a paused run after reviewing the generated comment.
+
+Request:
+
+```json
+{
+  "thread_id": "your-org/your-repo#123",
+  "approve": true,
+  "edited_comment": "optional replacement markdown"
+}
+```
+
+Behavior:
+
+- `approve=true`: continue to `post_comment`.
+- `approve=false`: skip `post_comment` and continue to completion.
+- `edited_comment` is optional and used when approving.
 
 ### GET `/graph`
 
@@ -170,6 +196,14 @@ Trigger run:
 curl -X POST http://localhost:8000/run `
   -H "Content-Type: application/json" `
   -d "{\"owner\":\"your-org\",\"repo\":\"your-repo\",\"pr_number\":1}"
+```
+
+If response contains `"requires_human_review": true`, approve or skip:
+
+```powershell
+curl -X POST http://localhost:8000/run/decision `
+  -H "Content-Type: application/json" `
+  -d "{\"thread_id\":\"your-org/your-repo#1\",\"approve\":true}"
 ```
 
 Fetch graph image:

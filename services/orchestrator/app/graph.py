@@ -4,7 +4,8 @@ import logging
 from typing import Literal
 from typing import Any
 from langgraph.graph import StateGraph, END
-from .schema import ReviewState
+from langgraph.types import interrupt
+from .schema import ReviewState, ToolRun
 from .graph_guard import build_guarded_node_handler
 from .tools.github_mcp import GitHubMCP
 from .tools.ci_mcp import CIMCP
@@ -22,8 +23,12 @@ ci = CIMCP()
 sec = SecurityMCP()
 
 
-def next_after_compose(state: ReviewState) -> Literal["post_comment", "complete_check_run"]:
-    return "post_comment" if state.findings else "complete_check_run"
+def next_after_compose(state: ReviewState) -> Literal["human_review", "complete_check_run"]:
+    return "human_review" if state.findings else "complete_check_run"
+
+
+def next_after_human_review(state: ReviewState) -> Literal["post_comment", "complete_check_run"]:
+    return "post_comment" if bool(state.comment_approved and state.final_comment) else "complete_check_run"
 
 
 async def fetch_pr(state: ReviewState) -> dict:
@@ -154,16 +159,76 @@ async def post_comment(state: ReviewState) -> dict:
     if state.final_comment:
         source = f"{state.owner}/{state.repo}#{state.pr_number}:{state.head_sha or ''}:{state.final_comment}"
         idempotency_key = hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
-        tr = await gh.post_comment(
-            state.owner,
-            state.repo,
-            state.pr_number,
-            state.final_comment,
-            idempotency_key=idempotency_key,
-        )
-        logger.info("graph.post_comment done ok=%s", tr.ok)
-        return {"tool_runs": [tr]}
+        try:
+            tr = await gh.post_comment(
+                state.owner,
+                state.repo,
+                state.pr_number,
+                state.final_comment,
+                idempotency_key=idempotency_key,
+            )
+            logger.info("graph.post_comment done ok=%s", tr.ok)
+            return {"tool_runs": [tr]}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("graph.post_comment failed error=%s", str(exc))
+            return {
+                "tool_runs": [
+                    ToolRun(
+                        tool="github",
+                        action="comment",
+                        ok=False,
+                        meta={"error": "github_post_comment_failed"},
+                        stderr=str(exc),
+                    )
+                ]
+            }
     return {}
+
+
+async def human_review(state: ReviewState) -> dict:
+    logger.info(
+        "graph.human_review start findings=%s has_comment=%s",
+        len(state.findings),
+        bool(state.final_comment),
+    )
+    if not state.final_comment:
+        logger.info("graph.human_review skipped because final_comment is empty")
+        return {"comment_approved": False}
+
+    decision = interrupt(
+        {
+            "type": "human_comment_review",
+            "owner": state.owner,
+            "repo": state.repo,
+            "pr_number": state.pr_number,
+            "final_comment": state.final_comment,
+            "prompt": "Review the comment. Approve to post, or reject to skip posting.",
+            "resume_schema": {
+                "ok": "bool (true = post comment, false = skip comment)",
+                "comment": "optional string, edited comment to post when ok=true",
+            },
+        }
+    )
+    if not isinstance(decision, dict):
+        raise TypeError(
+            f"human_review interrupt resume payload must be dict, got {type(decision).__name__}"
+        )
+    approved = bool(decision.get("ok", False))
+    edited_comment = decision.get("comment")
+    updated_comment = (
+        edited_comment
+        if isinstance(edited_comment, str) and edited_comment.strip()
+        else state.final_comment
+    )
+    logger.info(
+        "graph.human_review done approved=%s edited=%s",
+        approved,
+        bool(isinstance(edited_comment, str) and edited_comment.strip()),
+    )
+    return {
+        "comment_approved": approved,
+        "final_comment": updated_comment,
+    }
 
 
 def build_graph(checkpointer: Any | None = None):
@@ -182,6 +247,7 @@ def build_graph(checkpointer: Any | None = None):
         "security_review": security_agent,
         "converge_agents": converge_agents,
         "compose_comment": compose_comment,
+        "human_review": human_review,
         "post_comment": post_comment,
     }
     for node_name, node_callable in nodes.items():
@@ -210,8 +276,9 @@ def build_graph(checkpointer: Any | None = None):
     # Sequential: process and post results
     g.add_edge("converge_agents", "compose_comment")
 
-    # Conditional: post comment only if findings exist
+    # Conditional: request human review only if findings exist
     g.add_conditional_edges("compose_comment", next_after_compose)
+    g.add_conditional_edges("human_review", next_after_human_review)
 
     g.add_edge("post_comment", "complete_check_run")
     g.add_edge("complete_check_run", END)

@@ -45,5 +45,6 @@ class ReviewState(BaseModel):
     node_calls: Annotated[List[str], operator.add] = Field(default_factory=list)
 
     final_comment: Optional[str] = None
+    comment_approved: Optional[bool] = None
     head_sha: Optional[str] = None
     check_run_id: Optional[int] = None
